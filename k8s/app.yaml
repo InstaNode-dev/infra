@@ -1,0 +1,173 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instant-api
+  namespace: instant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: instant-api
+  template:
+    metadata:
+      labels:
+        app: instant-api
+    spec:
+      serviceAccountName: instant-api   # grants deploy-manager ClusterRole (see deploy-rbac.yaml)
+      initContainers:
+        # Wait for platform DB to be ready before starting the API
+        - name: wait-for-platform-db
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres-platform -U instant -d instant_platform; do
+                echo "Waiting for platform DB..."; sleep 2
+              done
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /run/docker.sock   # Lima VM's actual dockerd socket (not the macOS-forwarded one)
+            type: Socket
+      containers:
+        - name: api
+          image: instant-api:local   # built with: docker build -t instant-api:local .
+          ports:
+            - containerPort: 8080
+            - containerPort: 50052
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+          envFrom:
+            - configMapRef:
+                name: instant-config
+          env:
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: JWT_SECRET
+            - name: AES_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: AES_KEY
+            - name: RAZORPAY_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: RAZORPAY_KEY_ID
+            - name: RAZORPAY_KEY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: RAZORPAY_KEY_SECRET
+            - name: RAZORPAY_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: RAZORPAY_WEBHOOK_SECRET
+            - name: RAZORPAY_PLAN_ID_HOBBY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: RAZORPAY_PLAN_ID_HOBBY
+            - name: RAZORPAY_PLAN_ID_PRO
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: RAZORPAY_PLAN_ID_PRO
+            - name: RAZORPAY_PLAN_ID_TEAM
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: RAZORPAY_PLAN_ID_TEAM
+            - name: RESEND_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: RESEND_API_KEY
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: GITHUB_CLIENT_SECRET
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: GOOGLE_CLIENT_SECRET
+            - name: PROVISIONER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: PROVISIONER_SECRET
+            - name: MIGRATOR_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: MIGRATOR_SECRET
+            - name: R2_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: R2_API_TOKEN
+            - name: R2_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: R2_ENDPOINT
+                  optional: true
+            - name: R2_BUCKET_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: R2_BUCKET_NAME
+                  optional: true
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: MINIO_ROOT_USER
+                  optional: true
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: MINIO_ROOT_PASSWORD
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: instant-api
+  namespace: instant
+spec:
+  selector:
+    app: instant-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080   # access locally at http://localhost:30080
+    - name: dashboard-grpc
+      port: 50052
+      targetPort: 50052
+      nodePort: 30052
+  type: NodePort   # Rancher Desktop exposes NodePort via localhost

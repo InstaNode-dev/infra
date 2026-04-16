@@ -1,0 +1,84 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: instant-dashboard-api-config
+  namespace: instant
+data:
+  PORT: "8081"
+  ENVIRONMENT: development
+  # dashboard-api calls the agent API DashboardService over gRPC
+  AGENT_API_GRPC_ADDR: "instant-api.instant.svc.cluster.local:50052"
+  AGENT_API_URL: "http://instant-api.instant.svc.cluster.local:8080"
+  # Shares platform DB with the agent API (read-only team/billing queries)
+  DATABASE_URL: "postgres://instant:instant@postgres-platform.instant.svc.cluster.local:5432/instant_platform?sslmode=disable"
+  GITHUB_CLIENT_ID: ""
+  GOOGLE_CLIENT_ID: ""
+  GOOGLE_REDIRECT_URI: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instant-dashboard-api
+  namespace: instant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: instant-dashboard-api
+  template:
+    metadata:
+      labels:
+        app: instant-dashboard-api
+    spec:
+      containers:
+        - name: instant-dashboard-api
+          image: instant-dashboard-api:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: instant-dashboard-api-config
+          env:
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: JWT_SECRET
+            - name: RAZORPAY_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: RAZORPAY_KEY_ID
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: GOOGLE_CLIENT_SECRET
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: instant-dashboard-api
+  namespace: instant
+spec:
+  selector:
+    app: instant-dashboard-api
+  ports:
+    - port: 8081
+      targetPort: 8081
+      nodePort: 30082
+  type: NodePort

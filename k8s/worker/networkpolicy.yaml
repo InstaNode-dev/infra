@@ -1,0 +1,45 @@
+---
+# Worker has no HTTP server — no ingress rules needed.
+# Egress: platform postgres (5432) and platform redis (6379) in instant namespace,
+#         provisioner gRPC (50051) in instant-infra namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: instant-worker-netpol
+  namespace: instant-infra
+spec:
+  podSelector:
+    matchLabels:
+      app: instant-worker
+  policyTypes:
+    - Egress
+  egress:
+    # Platform postgres and platform redis in instant namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant
+      ports:
+        - port: 5432
+          protocol: TCP
+        - port: 6379
+          protocol: TCP
+    # Provisioner gRPC in instant-infra namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-provisioner
+      ports:
+        - port: 50051
+          protocol: TCP
+    # DNS resolution
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

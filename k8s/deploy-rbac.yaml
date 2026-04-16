@@ -1,0 +1,58 @@
+---
+# ServiceAccount for the instant-api pod in the instant namespace.
+# The default SA has no cluster-level permissions; this dedicated SA is
+# bound to the ClusterRole below so the API can manage deploy namespaces.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: instant-api
+  namespace: instant
+
+---
+# ClusterRole granting the permissions needed to manage per-deploy namespaces
+# and all k8s resources created inside them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: instant-api-deploy-manager
+rules:
+  # Namespaces: create (for new deploys) and delete (for teardown).
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "delete"]
+
+  # Core workload resources inside each deploy namespace.
+  - apiGroups: [""]
+    resources: ["limitranges", "resourcequotas", "services", "secrets", "configmaps", "pods"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Pod log streaming — needed for GET /resources/:token/logs.
+  # Separate rule required because pods/log is a subresource with its own RBAC entry.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+  # Deployments.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Ingresses (Traefik on k3s uses networking.k8s.io/v1).
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+# Bind the ClusterRole to the instant-api ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: instant-api-deploy-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: instant-api-deploy-manager
+subjects:
+  - kind: ServiceAccount
+    name: instant-api
+    namespace: instant

@@ -1,0 +1,130 @@
+groups:
+  - name: instant_api_reliability
+    interval: 30s
+    rules:
+      # ── HTTP Error Rates ───────────────────────────────────────────────────────
+
+      # Fire when 5xx responses exceed 5% of total traffic for 2 consecutive minutes.
+      # Threshold rationale: flaky deploys or downstream failures produce short spikes;
+      # sustained >5% indicates a systemic problem worth waking someone up for.
+      - alert: HighHTTP5xxRate
+        expr: |
+          sum(rate(instant_http_errors_total{status_class="5xx"}[2m]))
+          /
+          sum(rate(instant_http_request_duration_seconds_count[2m])) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High HTTP 5xx error rate ({{ $value | humanizePercentage }})"
+          description: >
+            More than 5% of API requests are returning 5xx errors over the last 2 minutes.
+            Check provisioner connectivity, database availability, and recent deploys.
+
+      # Fire when 4xx rate exceeds 20% — often indicates a bad client, broken auth,
+      # or a routing change that is sending valid traffic to the wrong endpoint.
+      - alert: High4xxRate
+        expr: |
+          sum(rate(instant_http_errors_total{status_class="4xx"}[5m]))
+          /
+          sum(rate(instant_http_request_duration_seconds_count[5m])) > 0.20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated HTTP 4xx rate ({{ $value | humanizePercentage }})"
+          description: >
+            More than 20% of requests are returning 4xx errors. This may indicate a breaking
+            API change, bad credentials in automated clients, or a DDoS/scanning attempt.
+
+      # ── Provision Failures ─────────────────────────────────────────────────────
+
+      # Fire when provision failures exceed 0.1/s (6/min) for 3 minutes.
+      # A provisioner restart or network blip can cause a brief spike — 3m avoids false positives.
+      - alert: HighProvisionFailureRate
+        expr: sum(rate(instant_provision_failures_total[3m])) > 0.1
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Elevated provision failure rate"
+          description: >
+            Provision failures are averaging more than 0.1/s over the last 3 minutes.
+            Service: {{ $labels.service }}. Check provisioner pod logs and gRPC connectivity.
+
+      # Fire immediately when gRPC calls to the provisioner start returning errors.
+      # Any sustained gRPC error stream means no new databases/caches can be created.
+      - alert: ProvisionerGRPCErrors
+        expr: rate(instant_grpc_duration_seconds_count{status="error"}[2m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Provisioner gRPC errors on {{ $labels.method }}"
+          description: >
+            gRPC calls to the provisioner service are failing (method: {{ $labels.method }}).
+            All provisioning requests will return 503 until resolved.
+            Check: kubectl logs -l app=instant-provisioner -n instant-infra
+
+      # ── Latency ────────────────────────────────────────────────────────────────
+
+      # p95 HTTP latency exceeding 3 seconds is user-perceptible and agent-fatal
+      # (agents timeout after 10s; 3s p95 means many are approaching that limit).
+      - alert: HighHTTPLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(instant_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP p95 latency ({{ $value | humanizeDuration }})"
+          description: >
+            p95 HTTP response time has exceeded 3 seconds for 5 minutes.
+            This typically indicates: slow provisioner gRPC calls, database query timeouts,
+            or CPU saturation. Check instant_provision_duration_seconds and gRPC dashboards.
+
+      # p95 provision latency exceeding 8 seconds — provisioning should complete in <2s normally.
+      - alert: SlowProvisionLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(instant_provision_duration_seconds_bucket[5m])) by (le, service)
+          ) > 8
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow {{ $labels.service }} provision latency ({{ $value | humanizeDuration }})"
+          description: >
+            p95 provision time for {{ $labels.service }} exceeds 8 seconds.
+            Check the provisioner backend (Neon/Redis/MongoDB) for connectivity issues.
+
+      # ── Infrastructure ─────────────────────────────────────────────────────────
+
+      # GeoIP database older than 30 days (720h) means country/ASN enrichment is stale.
+      # MaxMind recommends monthly updates.
+      - alert: GeoIPDatabaseStale
+        expr: instant_geoip_db_age_hours > 720
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GeoIP database is stale ({{ $value | humanize }} hours old)"
+          description: >
+            The MaxMind GeoLite2 database has not been refreshed in over 30 days.
+            Country and cloud-vendor enrichment may be inaccurate.
+            Trigger a refresh via the worker's geodb job.
+
+      # Redis errors failing open — rate limiting may be bypassed.
+      - alert: RedisErrorSpike
+        expr: rate(instant_redis_errors_total[2m]) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis error rate elevated ({{ $value | humanize }}/s)"
+          description: >
+            Redis operation errors are above 0.5/s. Rate limiting and provision-limit checks
+            fail open by design, but sustained errors indicate a connectivity problem.
+            Check platform Redis availability.

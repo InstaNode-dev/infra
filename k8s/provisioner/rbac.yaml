@@ -1,0 +1,93 @@
+---
+# ServiceAccount for instant-provisioner.
+# The provisioner pod uses this SA to call the k8s API when K8S_DEDICATED_BACKEND=true.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: instant-provisioner
+  namespace: instant-infra
+automountServiceAccountToken: true   # required for in-cluster k8s client config
+
+---
+# ClusterRole: minimum permissions needed to provision customer namespaces.
+#
+# Security note: this is intentionally broad — the provisioner can create/delete
+# namespaces and workloads cluster-wide. In production, pair with an OPA/Kyverno
+# policy to enforce that the provisioner only operates on namespaces whose names
+# start with "instant-customer-". This is the admission-layer guard Emergent.sh
+# and similar platforms use to prevent blast-radius expansion.
+#
+# What each rule covers:
+#   namespaces            — create/delete customer namespaces
+#   resourcequotas        — apply per-namespace resource caps (DoS protection)
+#   secrets               — store admin DB credentials in customer namespace
+#   persistentvolumeclaims— create EBS gp3 volumes for DB data
+#   pods (get/list/watch) — poll readiness during provisioning
+#   services              — create NodePort Service for external access
+#   deployments           — create DB pods
+#   networkpolicies       — apply deny-all + allow-provisioner in customer namespace
+#   nodes (get/list)      — reserved for future: get external IP for NodePort URLs
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: instant-provisioner
+rules:
+  # Namespace management
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["create", "get", "list", "delete"]
+
+  # Per-namespace resource caps
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["create", "get", "list", "delete"]
+
+  # Admin DB credentials stored as k8s Secrets in customer namespace
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "list", "delete"]
+
+  # EBS / local-path PVCs for DB data
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "get", "list", "delete"]
+
+  # Pod readiness polling (used during Provision to wait for DB to be healthy)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+
+  # Services: NodePort for external access + ClusterIP for internal init SQL
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "get", "list", "delete"]
+
+  # Deployments: the actual DB workload
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "get", "list", "delete"]
+
+  # NetworkPolicy: deny-all + targeted allow rules in each customer namespace
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "get", "list", "delete"]
+
+  # Nodes: used to look up external IPs for NodePort URLs (future use)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+
+---
+# Bind the ClusterRole to the provisioner ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: instant-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: instant-provisioner
+    namespace: instant-infra
+roleRef:
+  kind: ClusterRole
+  name: instant-provisioner
+  apiGroup: rbac.authorization.k8s.io

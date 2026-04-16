@@ -1,0 +1,61 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instant-worker
+  namespace: instant-infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: instant-worker
+  template:
+    metadata:
+      labels:
+        app: instant-worker
+    spec:
+      serviceAccountName: instant-worker
+      containers:
+        - name: worker
+          image: instant-worker:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8091
+              name: liveness
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8091
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8091
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: ""
+            - name: OTEL_SERVICE_NAME
+              value: "instant-worker"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              value: "redis://redis.instant.svc.cluster.local:6379"
+            - name: PROVISIONER_ADDR
+              value: "instant-provisioner.instant-infra.svc.cluster.local:50051"
+            - name: PROVISIONER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: PROVISIONER_SECRET
+            - name: ENVIRONMENT
+              value: development
+            - name: KUBE_NAMESPACE_APPS
+              value: "instant-apps"

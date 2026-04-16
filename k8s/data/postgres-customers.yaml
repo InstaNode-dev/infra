@@ -1,0 +1,68 @@
+---
+# Customer Postgres — provisioned db_{token} databases live here (Phase 2+)
+# Isolated from platform DB: compromise of customer data never touches metadata.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-customers-pvc
+  namespace: instant-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-customers
+  namespace: instant-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-customers
+  template:
+    metadata:
+      labels:
+        app: postgres-customers
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: instant_customers
+            - name: POSTGRES_USER
+              value: instant_cust
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: instant-data-secrets
+                  key: CUSTOMER_DB_PASSWORD
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "instant_cust", "-d", "instant_customers"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-customers-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-customers
+  namespace: instant-data
+spec:
+  selector:
+    app: postgres-customers
+  ports:
+    - port: 5432
+      targetPort: 5432

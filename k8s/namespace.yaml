@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: instant
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: instant-infra
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: instant-data

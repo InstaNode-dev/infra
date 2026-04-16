@@ -1,0 +1,97 @@
+# Temporal Helm chart values for local k8s (k3s/Rancher Desktop).
+# Uses platform Postgres as persistence — no Cassandra, no embedded datastores.
+# Chart: temporalio/temporal (v1.x+)
+# Install: helm upgrade --install temporal temporalio/temporal -n temporal -f helm-values.yaml
+
+# ── Server ────────────────────────────────────────────────────────────────────
+server:
+  replicaCount: 1
+
+  config:
+    persistence:
+      defaultStore: default
+      visibilityStore: visibility
+      numHistoryShards: 4   # small value for local dev (cannot change after first install)
+      datastores:
+        default:
+          sql:
+            pluginName: "postgres12"
+            manageSchema: true
+            databaseName: temporal
+            connectAddr: "postgres-platform.instant.svc.cluster.local:5432"
+            connectProtocol: "tcp"
+            user: instant
+            password: instant
+            maxConns: 20
+            maxIdleConns: 10
+            maxConnLifetime: "1h"
+            tls:
+              enabled: false
+        visibility:
+          sql:
+            pluginName: "postgres12"
+            manageSchema: true
+            databaseName: temporal_visibility
+            connectAddr: "postgres-platform.instant.svc.cluster.local:5432"
+            connectProtocol: "tcp"
+            user: instant
+            password: instant
+            maxConns: 20
+            maxIdleConns: 10
+            maxConnLifetime: "1h"
+            tls:
+              enabled: false
+
+  metrics:
+    annotations:
+      enabled: true
+
+# ── Web UI ────────────────────────────────────────────────────────────────────
+web:
+  enabled: true
+  replicaCount: 1
+  service:
+    type: NodePort
+    port: 8080
+    nodePort: 30888   # access at http://localhost:30888
+
+# ── Admin tools ──────────────────────────────────────────────────────────────
+admintools:
+  enabled: true
+
+# ── Resource limits (dev sizing) ─────────────────────────────────────────────
+frontend:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+history:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+matching:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+worker:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

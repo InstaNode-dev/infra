@@ -1,0 +1,96 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    batchwait: 1s
+    batchsize: 102400
+
+scrape_configs:
+  # k8s API container — forwarded by log-forwarder sidecar.
+  # k8s containers use network_mode:container:<pod_id> and are invisible to
+  # docker_sd_configs, so we tail via static file paths.
+  - job_name: k8s-instant-api
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          service: instant-api
+          container: instant-api
+          __path__: /k8s-logs/instant-api.log
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            msg: msg
+      - template:
+          source: level
+          template: '{{ ToLower .Value }}'
+      - labels:
+          level:
+      - match:
+          selector: '{service="instant-api"}'
+          stages:
+            - drop:
+                expression: '"msg":"healthz"'
+
+  - job_name: k8s-instant-provisioner
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          service: instant-provisioner
+          container: instant-provisioner
+          __path__: /k8s-logs/instant-provisioner.log
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            msg: msg
+      - template:
+          source: level
+          template: '{{ ToLower .Value }}'
+      - labels:
+          level:
+
+  - job_name: k8s-instant-worker
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          service: instant-worker
+          container: instant-worker
+          __path__: /k8s-logs/instant-worker.log
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            msg: msg
+      - template:
+          source: level
+          template: '{{ ToLower .Value }}'
+      - labels:
+          level:
+
+  - job_name: k8s-instant-migrator
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          service: instant-migrator
+          container: instant-migrator
+          __path__: /k8s-logs/instant-migrator.log
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            msg: msg
+      - template:
+          source: level
+          template: '{{ ToLower .Value }}'
+      - labels:
+          level:

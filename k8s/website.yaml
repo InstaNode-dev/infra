@@ -1,0 +1,78 @@
+---
+# ConfigMap: controls which API URLs are embedded in the website
+# LOCAL (default): points to the API running in k8s (via ClusterIP)
+# PRODUCTION: set API_BASE_URL=https://instant.dev before applying
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: instant-website-config
+  namespace: instant
+data:
+  # Override this for production: https://instant.dev
+  # For local k8s (Rancher Desktop / minikube): use the API's NodePort
+  # The API is exposed on NodePort 30080 by default (see app.yaml)
+  API_BASE_URL: "http://localhost:30080"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instant-website
+  namespace: instant
+  labels:
+    app: instant-website
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: instant-website
+  template:
+    metadata:
+      labels:
+        app: instant-website
+    spec:
+      containers:
+        - name: website
+          image: instant-website:local   # build with: docker build -t instant-website:local website/
+          ports:
+            - containerPort: 80
+          env:
+            - name: API_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: instant-website-config
+                  key: API_BASE_URL
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "10m"
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: instant-website
+  namespace: instant
+spec:
+  selector:
+    app: instant-website
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30081   # access locally at http://localhost:30081
+  type: NodePort
