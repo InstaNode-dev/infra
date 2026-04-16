@@ -1,0 +1,121 @@
+version: '3.8'
+services:
+  # Platform DB — stores teams, users, resources, pings, onboarding_events
+  postgres_platform:
+    image: postgres:16-alpine
+    container_name: instant_platform_db
+    environment:
+      POSTGRES_DB: instant_platform
+      POSTGRES_USER: instant
+      POSTGRES_PASSWORD: instant
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_platform_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U instant -d instant_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Customer DB — where provisioned db_{token} databases are created (Phase 2+)
+  # Kept separate so a compromised customer DB never touches platform metadata.
+  postgres_customers:
+    image: postgres:16-alpine
+    container_name: instant_customers_db
+    environment:
+      POSTGRES_DB: instant_customers
+      POSTGRES_USER: instant_cust
+      POSTGRES_PASSWORD: instant_cust
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_customers_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U instant_cust -d instant_customers"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Platform Redis — rate limiting, session state, CLI device-flow, onboarding JWTs
+  redis:
+    image: redis:7-alpine
+    container_name: instant_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Consumer Redis — hosts user-provisioned cache resources (Phase 3)
+  # ACL-based namespace isolation: each token gets its own keyspace prefix.
+  # Separate from platform Redis so a compromised cache never touches rate-limit state.
+  redis_consumer:
+    image: redis:7-alpine
+    container_name: instant_redis_consumer
+    ports:
+      - "6380:6379"
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --aclfile /usr/local/etc/redis/users.acl
+    volumes:
+      - redis_consumer_data:/data
+      - ./config/redis-consumer-acl.conf:/usr/local/etc/redis/users.acl:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Consumer MongoDB — hosts user-provisioned NoSQL databases (Phase 4)
+  # Each provisioned token gets its own database (implicit creation on first insert).
+  # Separate from platform Postgres so customer data never touches platform metadata.
+  mongodb:
+    image: mongo:7
+    container_name: instant_mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: instant_admin
+      MONGO_INITDB_ROOT_PASSWORD: instant_admin
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Website — static docs/landing page served by nginx
+  # API URLs in the website point to the local API (http://localhost:8080)
+  # In production, set API_BASE_URL=https://instant.dev before building
+  website:
+    build:
+      context: ./website
+      dockerfile: Dockerfile
+    container_name: instant_website
+    ports:
+      - "3000:80"
+    environment:
+      # Local: point at the API container
+      # Change to https://instant.dev for production
+      API_BASE_URL: "http://localhost:8080"
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  postgres_platform_data:
+  postgres_customers_data:
+  redis_consumer_data:
+  mongodb_data:

@@ -1,0 +1,87 @@
+# PrometheusRule for prometheus-operator (monitoring.coreos.com/v1).
+# Apply to the namespace where your Prometheus instance is configured to discover rules
+# (often "monitoring"). If you do not use the operator, extract the inner "groups" YAML
+# into a Prometheus file_sd / prometheus.yml rule_file instead.
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: instant-platform
+  namespace: instant
+  labels:
+    release: prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: instant-api
+      rules:
+        - alert: HighProvisionErrorRate
+          expr: |
+            (
+              sum(rate(instant_http_errors_total{route=~"/db/new|/cache/new|/nosql/new|/queue/new|/storage/new",status_class="5xx"}[5m]))
+            )
+            /
+            clamp_min(
+              sum(rate(instant_http_request_duration_seconds_count{route=~"/db/new|/cache/new|/nosql/new|/queue/new|/storage/new"}[5m])),
+              1e-9
+            )
+            > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Provision 5xx error rate > 5% (instant_http_errors_total / request count)"
+
+        - alert: HighProvisionLatency
+          expr: |
+            histogram_quantile(
+              0.99,
+              sum by (le) (
+                rate(instant_http_request_duration_seconds_bucket{route=~"/db/new|/cache/new|/nosql/new|/queue/new|/storage/new"}[5m])
+              )
+            ) > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "P99 provision latency > 5s (instant_http_request_duration_seconds)"
+
+        - alert: APIDown
+          expr: up{job="instant-api"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "instant-api scrape target is down"
+
+        - alert: ProvisionerGRPCDown
+          expr: up{job="instant-provisioner"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "instant-provisioner scrape target is down"
+
+        - alert: HighClaimFailureRate
+          expr: |
+            (
+              sum(rate(instant_http_errors_total{route="/claim",status_class=~"4xx|5xx"}[10m]))
+            )
+            /
+            clamp_min(sum(rate(instant_http_request_duration_seconds_count{route="/claim"}[10m])), 1e-9)
+            > 0.10
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Claim route 4xx/5xx rate > 10%"
+
+        - alert: AnonymousResourceExpiryStopped
+          expr: |
+            increase(instant_expired_resources_total[1h]) == 0
+            and instant_active_anonymous_resources > 100
+          for: 2h
+          labels:
+            severity: warning
+          annotations:
+            summary: "No anonymous expirations in 1h while many active TTL resources remain (worker metrics)"

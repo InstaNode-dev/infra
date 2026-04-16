@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: instant-config
+  namespace: instant
+data:
+  PORT: "8080"
+  DASHBOARD_GRPC_PORT: "50052"
+  # OpenTelemetry OTLP gRPC (host:port, no scheme). Empty = tracing disabled (noop).
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  OTEL_SERVICE_NAME: "instant-api"
+  ENVIRONMENT: development
+  INSTANT_ENABLED_SERVICES: redis,mongodb,postgres,queue,webhook,storage,deploy
+  PLANS_PATH: /app/plans.yaml
+  NATS_HOST: nats.instant-data.svc.cluster.local
+  DATABASE_URL: postgres://instant:instant@postgres-platform.instant.svc.cluster.local:5432/instant_platform?sslmode=disable
+  REDIS_URL: redis://redis.instant.svc.cluster.local:6379
+  GEOLITE2_DB_PATH: /app/GeoLite2-City.mmdb
+  GITHUB_CLIENT_ID: ""
+  GOOGLE_CLIENT_ID: ""
+  # Optional default for GET /auth/google/url (agent API) when redirect_uri query is omitted
+  GOOGLE_REDIRECT_URI: ""
+  PROVISIONER_ADDR: "instant-provisioner.instant-infra.svc.cluster.local:50051"
+  MIGRATOR_ADDR: "http://instant-migrator.instant-infra.svc.cluster.local:8090"
+  COMPUTE_PROVIDER: "k8s"
+  STACK_EXPOSE_VIA: "nodeport"
+  KUBE_NAMESPACE_APPS: "instant-apps"
+  MINIO_ENDPOINT: "minio.instant-data.svc.cluster.local:9000"
+  MINIO_BUCKET_NAME: "instant-shared"

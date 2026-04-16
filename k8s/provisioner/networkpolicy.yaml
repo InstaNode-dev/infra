@@ -1,0 +1,116 @@
+---
+# Ingress: only instant-api pods from the instant namespace may reach gRPC port 50051.
+# Egress:
+#   - data layer ports (shared postgres-customers 5432, redis-provision 6379, mongodb 27017)
+#   - dedicated customer namespaces (labeled instant.dev/role=customer-resource) — init SQL
+#   - k8s API server (443) — in-cluster client-go when K8S_DEDICATED_BACKEND=true
+#   - external HTTPS 443 — Neon API (legacy)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: instant-provisioner-netpol
+  namespace: instant-infra
+spec:
+  podSelector:
+    matchLabels:
+      app: instant-provisioner
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant
+          podSelector:
+            matchLabels:
+              app: instant-api
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-worker
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-migrator
+      ports:
+        - port: 50051
+          protocol: TCP
+  egress:
+    # Provisioner's own database (postgres-provisioner in instant-infra) — pool state
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: postgres-provisioner
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Data layer — postgres-customers
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-data
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Data layer — redis-provision
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-data
+      ports:
+        - port: 6379
+          protocol: TCP
+    # Data layer — mongodb
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-data
+      ports:
+        - port: 27017
+          protocol: TCP
+    # Dedicated customer namespaces — provisioner connects here for:
+    #   1. init SQL/createUser after pod is Ready (Provision step)
+    #   2. StorageBytes queries (reading pg_database_size / Redis INFO / Mongo dbStats)
+    # Only namespaces labeled instant.dev/role=customer-resource match.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              instant.dev/role: customer-resource
+      ports:
+        - port: 5432
+          protocol: TCP   # dedicated postgres pods
+        - port: 6379
+          protocol: TCP   # dedicated redis pods
+        - port: 27017
+          protocol: TCP   # dedicated mongodb pods
+    # k8s API server egress.
+    # Port 443: EKS API endpoint (in-cluster ClusterIP kubernetes.default:443 maps here
+    #           after iptables DNAT in cloud environments).
+    # Port 6443: k3s/Rancher Desktop kube-apiserver. The Flannel CNI in k3s evaluates
+    #            network policy AFTER iptables DNAT, so the provisioner sees the
+    #            post-NAT destination (host:6443), not the ClusterIP port 443.
+    #            Both ports are needed for portability across dev and production.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP
+    # DNS resolution
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

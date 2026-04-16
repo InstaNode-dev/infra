@@ -1,0 +1,41 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  # Attach these labels to all time series collected from this instance.
+  external_labels:
+    cluster: 'local'
+    project: 'instant-dev'
+
+alerting:
+  # No alertmanager in local dev — alerts are visible in the Prometheus Alerts UI.
+  # In production, point this at your Alertmanager or PagerDuty webhook.
+  alertmanagers: []
+
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
+scrape_configs:
+  # instant.dev API — when running via "make run" or docker-compose (port 8080)
+  - job_name: 'instant-api-local'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+        labels:
+          env: 'local'
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # instant.dev API — when running in local k8s NodePort (port 30080)
+  - job_name: 'instant-api-k8s'
+    static_configs:
+      - targets: ['host.docker.internal:30080']
+        labels:
+          env: 'k8s'
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          env: 'local'

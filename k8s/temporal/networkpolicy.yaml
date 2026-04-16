@@ -1,0 +1,69 @@
+# NetworkPolicy for the temporal namespace.
+# Allows:
+#   - instant-migrator (instant-infra) → temporal-frontend:7233
+#   - temporal pods ↔ postgres-platform (instant namespace) on 5432
+#   - temporal internal pod-to-pod traffic
+# Denies everything else inbound.
+---
+# Allow migrator to reach temporal frontend
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-migrator-to-temporal
+  namespace: temporal
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-migrator
+      ports:
+        - protocol: TCP
+          port: 7233
+---
+# Allow temporal internal traffic (history ↔ matching ↔ frontend ↔ worker)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-temporal-internal
+  namespace: temporal
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: temporal
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: temporal
+    # Allow egress to postgres-platform
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant
+          podSelector:
+            matchLabels:
+              app: postgres-platform
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53

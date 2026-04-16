@@ -1,0 +1,23 @@
+# Expose Temporal frontend gRPC as NodePort so:
+#   - migrator pods reach it via ClusterIP (internal)
+#   - E2E tests reach it via localhost:30777 (external, for C8-C11)
+#   - tctl / temporal CLI on the host can reach it
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: temporal-frontend-nodeport
+  namespace: temporal
+  labels:
+    app.kubernetes.io/name: temporal-frontend-nodeport
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: temporal
+    app.kubernetes.io/component: frontend
+  ports:
+    - name: grpc
+      protocol: TCP
+      port: 7233
+      targetPort: 7233
+      nodePort: 30777   # tctl / SDK: localhost:30777

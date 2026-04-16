@@ -1,0 +1,101 @@
+apiVersion: v1
+data:
+  001_initial.sql: |
+    -- Migration: 001_initial
+    -- Platform schema for instant.dev Phase 1
+
+    CREATE TABLE IF NOT EXISTS teams (
+        id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name              TEXT,
+        plan_tier         TEXT NOT NULL DEFAULT 'hobby',
+        stripe_customer_id TEXT UNIQUE,
+        trial_ends_at     TIMESTAMPTZ,
+        created_at        TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS users (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        team_id     UUID REFERENCES teams(id) ON DELETE CASCADE,
+        email       TEXT UNIQUE NOT NULL,
+        github_id   TEXT UNIQUE,
+        google_id   TEXT UNIQUE,
+        created_at  TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS resources (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        team_id          UUID REFERENCES teams(id) ON DELETE SET NULL,
+        token            UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
+        resource_type    TEXT NOT NULL,
+        name             TEXT,
+        connection_url   TEXT,           -- AES-256-GCM encrypted
+        tier             TEXT NOT NULL DEFAULT 'anonymous',
+        fingerprint      TEXT,
+        cloud_vendor     TEXT,
+        country_code     CHAR(2),
+        status           TEXT NOT NULL DEFAULT 'active',
+        migration_status TEXT,
+        expires_at       TIMESTAMPTZ,
+        storage_bytes    BIGINT DEFAULT 0,
+        created_request_id TEXT,
+        created_at       TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_resources_token       ON resources(token);
+    CREATE INDEX IF NOT EXISTS idx_resources_fingerprint ON resources(fingerprint) WHERE team_id IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_resources_expires     ON resources(expires_at) WHERE status = 'active';
+    CREATE INDEX IF NOT EXISTS idx_resources_team        ON resources(team_id) WHERE team_id IS NOT NULL;
+
+
+    CREATE TABLE IF NOT EXISTS onboarding_events (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        fingerprint     TEXT NOT NULL,
+        jwt_issued_at   TIMESTAMPTZ DEFAULT now(),
+        jwt_expires_at  TIMESTAMPTZ,
+        converted_at    TIMESTAMPTZ,
+        team_id         UUID REFERENCES teams(id),
+        resource_tokens UUID[],
+        jti             TEXT UNIQUE NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_onboarding_jti ON onboarding_events(jti);
+    CREATE INDEX IF NOT EXISTS idx_onboarding_fingerprint ON onboarding_events(fingerprint);
+  002_team_members.sql: |
+    -- Migration: 002_team_members — roles, invitations, team membership
+
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'member';
+
+    UPDATE users u
+    SET role = 'owner'
+    FROM (
+        SELECT DISTINCT ON (team_id) id
+        FROM users
+        WHERE team_id IS NOT NULL
+        ORDER BY team_id, created_at ASC
+    ) AS first_user
+    WHERE u.id = first_user.id
+      AND u.role = 'member';
+
+    CREATE TABLE IF NOT EXISTS team_invitations (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'member',
+        invited_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '7 days',
+        CONSTRAINT team_invitations_role_chk CHECK (role IN ('owner', 'member')),
+        CONSTRAINT team_invitations_status_chk CHECK (status IN ('pending', 'accepted', 'revoked'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_invitations_team ON team_invitations(team_id);
+    CREATE INDEX IF NOT EXISTS idx_invitations_email ON team_invitations(lower(email));
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_team_email_pending
+        ON team_invitations (team_id, lower(email))
+        WHERE status = 'pending';
+kind: ConfigMap
+metadata:
+  name: instant-migrations
+  namespace: instant

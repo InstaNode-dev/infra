@@ -1,0 +1,26 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: instant-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+      httpMethod: POST
+    editable: true
+
+  - name: Loki
+    type: loki
+    uid: instant-loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      # Link Loki log lines to Prometheus traces via request_id label.
+      derivedFields:
+        - name: Request ID
+          matcherRegex: '"request_id":"([^"]+)"'
+          url: '/explore?orgId=1&left={"datasource":"instant-prometheus","queries":[{"expr":"{request_id=\"$${__value.raw}\"}"}]}'
+    editable: true

@@ -1,0 +1,76 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instant-migrator
+  namespace: instant-infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: instant-migrator
+  template:
+    metadata:
+      labels:
+        app: instant-migrator
+    spec:
+      containers:
+        - name: migrator
+          image: instant-migrator:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8090
+          env:
+            - name: HTTP_PORT
+              value: "8090"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: DATABASE_URL
+            - name: PROVISIONER_ADDR
+              value: "instant-provisioner.instant-infra.svc.cluster.local:50051"
+            - name: PROVISIONER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: PROVISIONER_SECRET
+            - name: MIGRATOR_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: MIGRATOR_SECRET
+            - name: AES_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: AES_KEY
+            # ── Workflow engine ──────────────────────────────────────────
+            # Set WORKFLOW_ENGINE=temporal to enable durable Temporal workflows.
+            # Set WORKFLOW_ENGINE=local (default) for goroutine-pool runner.
+            # Switch live: kubectl set env deployment/instant-migrator -n instant-infra WORKFLOW_ENGINE=temporal
+            - name: WORKFLOW_ENGINE
+              value: "temporal"
+            - name: TEMPORAL_HOST
+              value: "temporal-frontend.temporal.svc.cluster.local:7233"
+            - name: TEMPORAL_NAMESPACE
+              value: "default"
+            # TEMPORAL_API_KEY: only needed for Temporal Cloud (not local k8s)
+            - name: TEMPORAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: TEMPORAL_API_KEY
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8090
+            initialDelaySeconds: 15
+            periodSeconds: 30

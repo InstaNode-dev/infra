@@ -1,0 +1,526 @@
+{
+  "id": null,
+  "uid": "instant-api-overview",
+  "title": "instant.dev API",
+  "description": "Provision rates, error rates, latency, gRPC health, and Redis errors for the instant.dev agent-facing API.",
+  "tags": ["instant", "api", "reliability"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": { "refresh_intervals": ["10s", "30s", "1m", "5m"] },
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "5m", "value": "5m" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Rate Window",
+        "name": "rate_window",
+        "options": [
+          { "selected": false, "text": "1m",  "value": "1m" },
+          { "selected": false, "text": "2m",  "value": "2m" },
+          { "selected": true,  "text": "5m",  "value": "5m" },
+          { "selected": false, "text": "10m", "value": "10m" }
+        ],
+        "query": "1m,2m,5m,10m",
+        "type": "custom"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Provision Rate by Service",
+      "description": "Successful provisions per second, broken down by service type. A drop here means the provisioning flow is broken.",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "sum(rate(instant_provisions_total[$rate_window])) by (service)",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Provision Failure Rate",
+      "description": "Failed provisions per second by service and error reason. Non-zero values warrant investigation.",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "sum(rate(instant_provision_failures_total[$rate_window])) by (service, error_reason)",
+          "legendFormat": "{{service}} / {{error_reason}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "gradientMode": "opacity",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "HTTP Request Rate by Route",
+      "description": "Requests per second grouped by route template and status class. Cardinality is bounded — Fiber route templates, not raw URLs.",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "sum(rate(instant_http_request_duration_seconds_count[$rate_window])) by (route, status_class)",
+          "legendFormat": "{{route}} ({{status_class}})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "A" },
+            "properties": []
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "HTTP Latency — p50 / p95 / p99",
+      "description": "HTTP response time percentiles across all routes. p95 >3s triggers the HighHTTPLatencyP95 alert.",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(instant_http_request_duration_seconds_bucket[$rate_window])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(instant_http_request_duration_seconds_bucket[$rate_window])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(instant_http_request_duration_seconds_bucket[$rate_window])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "p95" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "p99" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "HTTP 5xx Error Rate",
+      "description": "5xx responses per second by route. Alert fires when this exceeds 5% of total traffic for 2 minutes.",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "sum(rate(instant_http_errors_total{status_class=\"5xx\"}[$rate_window])) by (route)",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "sum(rate(instant_http_errors_total{status_class=\"4xx\"}[$rate_window])) by (route)",
+          "legendFormat": "4xx {{route}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "A" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "B" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "gRPC Duration to Provisioner — p50 / p95",
+      "description": "Latency of gRPC calls from the API to the provisioner service. Sustained p95 >1s indicates provisioner load or network issues.",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(instant_grpc_duration_seconds_bucket{status=\"ok\"}[$rate_window])) by (le, method))",
+          "legendFormat": "p50 {{method}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(instant_grpc_duration_seconds_bucket{status=\"ok\"}[$rate_window])) by (le, method))",
+          "legendFormat": "p95 {{method}}",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "sum(rate(instant_grpc_duration_seconds_count{status=\"error\"}[$rate_window])) by (method)",
+          "legendFormat": "errors {{method}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "C" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } },
+              { "id": "unit", "value": "ops" }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Provision Duration p95 by Service",
+      "description": "End-to-end provisioning latency including the gRPC or local backend call. Normal range: 100ms–2s. Alert at 8s p95.",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(instant_provision_duration_seconds_bucket[$rate_window])) by (le, service))",
+          "legendFormat": "p95 {{service}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(instant_provision_duration_seconds_bucket[$rate_window])) by (le, service))",
+          "legendFormat": "p50 {{service}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Redis Errors by Operation",
+      "description": "Rate of Redis errors by operation. Redis errors fail open — rate limiting and quota checks are bypassed when Redis is down.",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "sum(rate(instant_redis_errors_total[$rate_window])) by (operation)",
+          "legendFormat": "{{operation}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Conversion Funnel",
+      "description": "Cumulative counts for each stage of the anonymous → paid funnel.",
+      "gridPos": { "x": 0, "y": 32, "w": 24, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "sum(instant_conversion_funnel_total{step=\"provision\"}) or vector(0)",
+          "legendFormat": "1. Provision",
+          "refId": "A",
+          "instant": true
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "sum(instant_conversion_funnel_total{step=\"jwt_issued\"}) or vector(0)",
+          "legendFormat": "2. JWT Issued",
+          "refId": "B",
+          "instant": true
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "sum(instant_conversion_funnel_total{step=\"landing_viewed\"}) or vector(0)",
+          "legendFormat": "3. Landing Viewed",
+          "refId": "C",
+          "instant": true
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "sum(instant_conversion_funnel_total{step=\"claimed\"}) or vector(0)",
+          "legendFormat": "4. Claimed",
+          "refId": "D",
+          "instant": true
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "sum(instant_conversion_funnel_total{step=\"paid\"}) or vector(0)",
+          "legendFormat": "5. Paid",
+          "refId": "E",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue",  "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "GeoIP DB Age (hours)",
+      "description": "Age of MaxMind GeoLite2 database. Alert fires when this exceeds 720h (30 days).",
+      "gridPos": { "x": 0, "y": 36, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "instant_geoip_db_age_hours",
+          "legendFormat": "DB Age",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 504 },
+              { "color": "red",    "value": 720 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Fingerprint Abuse Blocked",
+      "description": "Total requests returned an existing resource instead of creating a new one due to fingerprint rate limiting.",
+      "gridPos": { "x": 6, "y": 36, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "instant-prometheus" },
+          "expr": "instant_fingerprint_abuse_blocked_total",
+          "legendFormat": "Blocked",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 10 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    }
+  ]
+}

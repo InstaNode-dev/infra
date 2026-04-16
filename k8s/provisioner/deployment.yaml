@@ -1,0 +1,125 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instant-provisioner
+  namespace: instant-infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: instant-provisioner
+  template:
+    metadata:
+      labels:
+        app: instant-provisioner
+    spec:
+      # ServiceAccount grants ClusterRole permissions for k8s dedicated backend.
+      # When K8S_DEDICATED_BACKEND=false (default), the SA is still present but unused.
+      serviceAccountName: instant-provisioner
+      initContainers:
+        - name: wait-for-provisioner-db
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - >-
+              until nc -z
+              postgres-provisioner.instant-infra.svc.cluster.local 5432;
+              do echo "waiting for provisioner db..."; sleep 2; done
+      containers:
+        - name: provisioner
+          image: instant-provisioner:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 50051
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: ""
+            - name: OTEL_SERVICE_NAME
+              value: "instant-provisioner"
+            - name: PROVISIONER_PORT
+              value: "50051"
+            - name: POSTGRES_PROVISION_BACKEND
+              value: "local"
+            - name: POSTGRES_CUSTOMERS_URL
+              value: "postgres://instant_cust:instant_cust@postgres-customers.instant-data.svc.cluster.local:5432/instant_customers?sslmode=disable"
+            - name: REDIS_PROVISION_BACKEND
+              value: "local"
+            - name: REDIS_PROVISION_HOST
+              value: "redis-provision.instant-data.svc.cluster.local:6379"
+            - name: MONGO_ADMIN_URI
+              value: "mongodb://root:root@mongodb.instant-data.svc.cluster.local:27017"
+            - name: MONGO_HOST
+              value: "mongodb.instant-data.svc.cluster.local:27017"
+            - name: PROVISIONER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: PROVISIONER_SECRET
+            # Hot-pool configuration
+            - name: PROVISIONER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: PROVISIONER_DATABASE_URL
+            - name: AES_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: AES_KEY
+            - name: POOL_POSTGRES_SIZE
+              value: "2"
+            - name: POOL_REDIS_SIZE
+              value: "3"
+            - name: POOL_MONGO_SIZE
+              value: "2"
+            # ── Kubernetes dedicated backend (Team tier) ──────────────────────
+            # See docs/ops-k8s-dedicated.md for the full EKS deployment guide.
+            - name: K8S_DEDICATED_BACKEND
+              value: "true"
+            - name: K8S_EXTERNAL_HOST
+              value: "127.0.0.1"    # Rancher Desktop: NodePorts accessible on localhost
+            - name: K8S_STORAGE_CLASS
+              value: "local-path"   # Rancher Desktop default; use "gp3" on EKS
+            - name: K8S_POSTGRES_IMAGE
+              value: "pgvector/pgvector:pg16"  # includes pgvector so pg_restore can restore vector extension
+            - name: K8S_REDIS_IMAGE
+              value: "redis:7-alpine"
+            - name: K8S_MONGO_IMAGE
+              value: "mongo:7"
+            - name: K8S_NATS_IMAGE
+              value: "nats:2.10-alpine"
+            - name: NATS_HOST
+              value: "nats.instant-data.svc.cluster.local"
+            - name: K8S_POSTGRES_STORAGE_GI
+              value: "1"            # small for local dev (saves disk)
+            - name: K8S_REDIS_STORAGE_GI
+              value: "1"
+            - name: K8S_MONGO_STORAGE_GI
+              value: "1"
+            # ── MinIO storage bytes queries ───────────────────────────────────
+            - name: MINIO_ENDPOINT
+              value: "minio.instant-data.svc.cluster.local:9000"
+            - name: MINIO_BUCKET_NAME
+              value: "instant-shared"
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secrets
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secrets
+                  key: MINIO_ROOT_PASSWORD
+          readinessProbe:
+            tcpSocket:
+              port: 50051
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 50051
+            initialDelaySeconds: 15
+            periodSeconds: 30

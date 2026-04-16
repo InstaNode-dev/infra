@@ -1,0 +1,14 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: instant-provisioner
+  namespace: instant-infra
+spec:
+  type: ClusterIP
+  selector:
+    app: instant-provisioner
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051

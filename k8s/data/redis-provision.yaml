@@ -1,0 +1,70 @@
+---
+# Redis for provisioning — key-namespaced per customer resource token.
+# Distinct from the platform Redis (instant namespace) used by the API/worker.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-provision-pvc
+  namespace: instant-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: local-path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-provision
+  namespace: instant-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-provision
+  template:
+    metadata:
+      labels:
+        app: redis-provision
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          command:
+            - redis-server
+            - --maxmemory
+            - 256mb
+            - --maxmemory-policy
+            - allkeys-lru
+            - --appendonly
+            - "yes"
+            - --dir
+            - /data
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-provision-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-provision
+  namespace: instant-data
+spec:
+  selector:
+    app: redis-provision
+  ports:
+    - port: 6379
+      targetPort: 6379

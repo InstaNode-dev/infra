@@ -1,0 +1,107 @@
+---
+# Ingress: only instant-api pods from the instant namespace may call HTTP port 8090.
+# Egress:
+#   - provisioner gRPC (50051) in instant-infra (ProvisionTarget, DeprovisionSource)
+#   - platform postgres (5432) in instant (UpdateMigrationStatus writes back to resources table)
+#   - data stores in instant-data: postgres-customers (5432), redis-provision (6379), mongodb (27017)
+#   - Temporal frontend (7233) in temporal namespace — local k8s Temporal
+#   - External HTTPS 443 — Temporal Cloud (when WORKFLOW_ENGINE=temporal pointing to cloud)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: instant-migrator-netpol
+  namespace: instant-infra
+spec:
+  podSelector:
+    matchLabels:
+      app: instant-migrator
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant
+          podSelector:
+            matchLabels:
+              app: instant-api
+      ports:
+        - port: 8090
+          protocol: TCP
+  egress:
+    # Provisioner gRPC — ProvisionTarget (creates target resource) and DeprovisionSource
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-provisioner
+      ports:
+        - port: 50051
+          protocol: TCP
+    # Platform postgres — UpdateMigrationStatus writes migration_status back to resources table
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Data stores — CopyData and Verify connect directly to source/target for pg_dump/redis SCAN/mongodump
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-data
+      ports:
+        - port: 5432
+          protocol: TCP   # postgres-customers
+        - port: 6379
+          protocol: TCP   # redis-provision
+        - port: 27017
+          protocol: TCP   # mongodb
+    # Dedicated customer pods — CopyData/Verify/HealthCheck connect via in-cluster
+    # service DNS (postgres/redis/mongodb.{ns}.svc.cluster.local). Namespaces are
+    # labeled instant.dev/role=customer-resource by the provisioner k8s backend.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              instant.dev/role: customer-resource
+      ports:
+        - port: 5432
+          protocol: TCP   # postgres
+        - port: 6379
+          protocol: TCP   # redis
+        - port: 27017
+          protocol: TCP   # mongodb
+    # Temporal frontend in temporal namespace (local k8s)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: temporal
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: frontend
+      ports:
+        - port: 7233
+          protocol: TCP
+    # External HTTPS — Temporal Cloud
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP
+    # DNS resolution
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

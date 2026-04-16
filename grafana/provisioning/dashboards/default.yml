@@ -1,0 +1,16 @@
+apiVersion: 1
+
+providers:
+  - name: instant-dashboards
+    orgId: 1
+    folder: instant.dev
+    folderUid: instant
+    type: file
+    # Prevent accidental deletion of dashboards from Grafana UI.
+    disableDeletion: true
+    # Poll for dashboard file changes every 30 seconds.
+    updateIntervalSeconds: 30
+    # Allow UI edits (changes are not persisted to disk, but useful for exploration).
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,0 +1,69 @@
+---
+# Postgres for the provisioner's own state (hot-pool tracking).
+# Isolated from platform DB and customer DBs.
+# Namespace: instant-infra
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-provisioner-pvc
+  namespace: instant-infra
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-provisioner
+  namespace: instant-infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-provisioner
+  template:
+    metadata:
+      labels:
+        app: postgres-provisioner
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: instant_provisioner
+            - name: POSTGRES_USER
+              value: instant_prov
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: PROVISIONER_DB_PASSWORD
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "instant_prov", "-d", "instant_provisioner"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-provisioner-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-provisioner
+  namespace: instant-infra
+spec:
+  selector:
+    app: postgres-provisioner
+  ports:
+    - port: 5432
+      targetPort: 5432
