@@ -1,8 +1,8 @@
 {
   "id": null,
   "uid": "instant-api-overview",
-  "title": "instant.dev API",
-  "description": "Provision rates, error rates, latency, gRPC health, and Redis errors for the instant.dev agent-facing API.",
+  "title": "instanode.dev API",
+  "description": "Provision rates, error rates, latency, gRPC health, and Redis errors for the instanode.dev agent-facing API.",
   "tags": ["instant", "api", "reliability"],
   "timezone": "browser",
   "schemaVersion": 38,
