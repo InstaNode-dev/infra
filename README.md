@@ -1,6 +1,6 @@
 # instant-infra
 
-Kubernetes manifests and docker-compose configuration for the instant.dev platform.
+Kubernetes manifests and docker-compose configuration for the instanode.dev platform.
 
 ## Local development
 
