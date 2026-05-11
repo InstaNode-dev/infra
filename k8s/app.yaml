@@ -128,18 +128,13 @@ spec:
                   name: instant-secrets
                   key: R2_BUCKET_NAME
                   optional: true
-            - name: MINIO_ROOT_USER
-              valueFrom:
-                secretKeyRef:
-                  name: instant-secrets
-                  key: MINIO_ROOT_USER
-                  optional: true
-            - name: MINIO_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: instant-secrets
-                  key: MINIO_ROOT_PASSWORD
-                  optional: true
+            # Object storage credentials (DO Spaces / AWS S3 / GCS / R2 etc.)
+            # are sourced from instant-secrets as OBJECT_STORE_* — see
+            # internal/config/config.go. The legacy MINIO_ROOT_USER/PASSWORD
+            # injection was removed when self-hosted MinIO was retired
+            # (PR: chore(infra): retire self-hosted MinIO after DO Spaces flip).
+            # config.go still reads MINIO_* as a fallback for local docker-compose
+            # dev, so existing .env files keep working unchanged.
           readinessProbe:
             httpGet:
               path: /healthz
