@@ -59,26 +59,43 @@ spec:
               value: development
             - name: KUBE_NAMESPACE_APPS
               value: "instant-apps"
-            # MinIO storage_bytes scanner — added 2026-05-11 in worker
-            # PR #4. The scanner walks every storage resource's bucket
-            # once per scan interval, sums object sizes, and updates
-            # resources.storage_bytes in the platform Postgres. When
-            # MINIO_ENDPOINT is empty (e.g., in CI), the scanner runs
-            # as a fail-open no-op and emits a single warn-log line
-            # per storage resource per interval.
-            - name: MINIO_ENDPOINT
-              value: "minio.instant-data.svc.cluster.local:9000"
-            - name: MINIO_BUCKET_NAME
-              value: "instant-shared"
-            - name: MINIO_ROOT_USER
+            # Object storage scanner — reads OBJECT_STORE_* env vars from
+            # instant-infra-secrets and walks each storage resource's
+            # bucket prefix to update resources.storage_bytes in platform
+            # Postgres. The legacy MINIO_* env injection was removed when
+            # self-hosted MinIO was retired (DO Spaces is now the active
+            # backend) — see PR: chore(infra): retire self-hosted MinIO
+            # after DO Spaces flip. The scanner falls back to MINIO_* via
+            # config.go for local docker-compose dev.
+            - name: OBJECT_STORE_ENDPOINT
               valueFrom:
                 secretKeyRef:
                   name: instant-infra-secrets
-                  key: MINIO_ROOT_USER
+                  key: OBJECT_STORE_ENDPOINT
                   optional: true
-            - name: MINIO_ROOT_PASSWORD
+            - name: OBJECT_STORE_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
                   name: instant-infra-secrets
-                  key: MINIO_ROOT_PASSWORD
+                  key: OBJECT_STORE_ACCESS_KEY
                   optional: true
+            - name: OBJECT_STORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_SECRET_KEY
+                  optional: true
+            - name: OBJECT_STORE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_BUCKET
+                  optional: true
+            - name: OBJECT_STORE_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_REGION
+                  optional: true
+            - name: OBJECT_STORE_SECURE
+              value: "true"

@@ -25,5 +25,8 @@ data:
   COMPUTE_PROVIDER: "k8s"
   STACK_EXPOSE_VIA: "nodeport"
   KUBE_NAMESPACE_APPS: "instant-apps"
-  MINIO_ENDPOINT: "minio.instant-data.svc.cluster.local:9000"
-  MINIO_BUCKET_NAME: "instant-shared"
+  # Object storage endpoint/bucket are sourced from instant-secrets as
+  # OBJECT_STORE_* (see internal/config/config.go). The legacy MINIO_ENDPOINT
+  # / MINIO_BUCKET_NAME ConfigMap entries were removed when self-hosted
+  # MinIO was retired in favour of DO Spaces — see PR:
+  # chore(infra): retire self-hosted MinIO after DO Spaces flip.

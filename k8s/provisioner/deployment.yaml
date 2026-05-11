@@ -98,21 +98,12 @@ spec:
               value: "1"
             - name: K8S_MONGO_STORAGE_GI
               value: "1"
-            # ── MinIO storage bytes queries ───────────────────────────────────
-            - name: MINIO_ENDPOINT
-              value: "minio.instant-data.svc.cluster.local:9000"
-            - name: MINIO_BUCKET_NAME
-              value: "instant-shared"
-            - name: MINIO_ROOT_USER
-              valueFrom:
-                secretKeyRef:
-                  name: minio-secrets
-                  key: MINIO_ROOT_USER
-            - name: MINIO_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: minio-secrets
-                  key: MINIO_ROOT_PASSWORD
+            # Object-storage credentials for the per-resource StorageBytes
+            # queries are sourced from instant-infra-secrets as OBJECT_STORE_*
+            # (DO Spaces is now the active backend). The legacy MINIO_*
+            # injection block that lived here was removed when self-hosted
+            # MinIO was retired — see PR:
+            # chore(infra): retire self-hosted MinIO after DO Spaces flip.
           readinessProbe:
             tcpSocket:
               port: 50051
