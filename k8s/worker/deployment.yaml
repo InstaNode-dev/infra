@@ -59,3 +59,26 @@ spec:
               value: development
             - name: KUBE_NAMESPACE_APPS
               value: "instant-apps"
+            # MinIO storage_bytes scanner — added 2026-05-11 in worker
+            # PR #4. The scanner walks every storage resource's bucket
+            # once per scan interval, sums object sizes, and updates
+            # resources.storage_bytes in the platform Postgres. When
+            # MINIO_ENDPOINT is empty (e.g., in CI), the scanner runs
+            # as a fail-open no-op and emits a single warn-log line
+            # per storage resource per interval.
+            - name: MINIO_ENDPOINT
+              value: "minio.instant-data.svc.cluster.local:9000"
+            - name: MINIO_BUCKET_NAME
+              value: "instant-shared"
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: MINIO_ROOT_USER
+                  optional: true
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: MINIO_ROOT_PASSWORD
+                  optional: true
