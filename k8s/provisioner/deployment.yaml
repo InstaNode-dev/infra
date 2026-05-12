@@ -33,11 +33,36 @@ spec:
           imagePullPolicy: Never
           ports:
             - containerPort: 50051
+              name: grpc
+            # /healthz sidecar exposed by track 5 (obs-3-provisioner). Used
+            # by the Service below for HTTP health probes from Prometheus
+            # and Kubernetes-native readiness.
+            - containerPort: 8092
+              name: healthz
           env:
+            # ── Observability (track 6 of 8) ──────────────────────────────────
+            # NEW_RELIC_LICENSE_KEY pulled from instant-infra-secrets. When
+            # empty or CHANGE_ME, the Go newrelic agent fails open and logs
+            # a warning every startup — never crashes.
+            - name: NEW_RELIC_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: NEW_RELIC_LICENSE_KEY
+                  optional: true
+            - name: NEW_RELIC_APP_NAME
+              value: "instant-provisioner"
+            # New Relic OTLP gRPC endpoint (US data center). Use
+            # https://otlp.eu01.nr-data.net:4317 for EU accounts.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: ""
+              value: "https://otlp.nr-data.net:4317"
             - name: OTEL_SERVICE_NAME
               value: "instant-provisioner"
+            # VERSION overrides the -ldflags-baked default at runtime. Bump
+            # per release, or leave as "dev" to rely on the buildinfo SHA
+            # baked into the image.
+            - name: VERSION
+              value: "dev"
             - name: PROVISIONER_PORT
               value: "50051"
             - name: POSTGRES_PROVISION_BACKEND
