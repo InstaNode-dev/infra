@@ -82,12 +82,22 @@ spec:
                 secretKeyRef:
                   name: instant-infra-secrets
                   key: PROVISIONER_SECRET
-            # Hot-pool configuration
+            # Hot-pool configuration.
+            # PROVISIONER_DATABASE_URL is optional: provisioner/main.go logs
+            # "provisioner.pool_disabled" and runs without the hot-pool when
+            # the value is empty or the key is missing from the secret.
+            # Marked optional:true after B2 incident (2026-05-12): `kubectl
+            # apply -f infra-secrets.yaml` had dropped a previously-patched
+            # key from the in-cluster Secret, leaving new provisioner pods
+            # stuck in CreateContainerConfigError. The secret YAML never
+            # carried this key, so making the deployment tolerant of its
+            # absence is the cleanest fix.
             - name: PROVISIONER_DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: instant-infra-secrets
                   key: PROVISIONER_DATABASE_URL
+                  optional: true
             - name: AES_KEY
               valueFrom:
                 secretKeyRef:
