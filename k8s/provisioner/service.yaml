@@ -12,3 +12,9 @@ spec:
     - name: grpc
       port: 50051
       targetPort: 50051
+    # /healthz sidecar from track 5 (obs-3-provisioner). Scraped by
+    # Prometheus and used for Kubernetes-native HTTP health probes
+    # — gRPC ports are TCP-only and don't carry buildinfo metadata.
+    - name: healthz
+      port: 8092
+      targetPort: 8092
