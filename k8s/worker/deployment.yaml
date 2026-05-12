@@ -37,10 +37,29 @@ spec:
             periodSeconds: 10
             failureThreshold: 3
           env:
+            # ── Observability (track 6 of 8) ──────────────────────────────────
+            # NEW_RELIC_LICENSE_KEY pulled from instant-infra-secrets. When
+            # empty or CHANGE_ME, the Go newrelic agent fails open and logs
+            # a warning every startup — never crashes.
+            - name: NEW_RELIC_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: NEW_RELIC_LICENSE_KEY
+                  optional: true
+            - name: NEW_RELIC_APP_NAME
+              value: "instant-worker"
+            # New Relic OTLP gRPC endpoint (US data center). Use
+            # https://otlp.eu01.nr-data.net:4317 for EU accounts.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: ""
+              value: "https://otlp.nr-data.net:4317"
             - name: OTEL_SERVICE_NAME
               value: "instant-worker"
+            # VERSION overrides the -ldflags-baked default at runtime. Bump
+            # per release, or leave as "dev" to rely on the buildinfo SHA
+            # baked into the image.
+            - name: VERSION
+              value: "dev"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

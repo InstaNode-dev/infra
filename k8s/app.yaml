@@ -140,6 +140,29 @@ spec:
                   name: instant-secrets
                   key: MINIO_ROOT_PASSWORD
                   optional: true
+            # ── Observability (track 6 of 8) ──────────────────────────────────
+            # NEW_RELIC_LICENSE_KEY pulled from instant-secrets. When empty or
+            # set to CHANGE_ME, the Go newrelic agent fails open and logs a
+            # warning every startup — never crashes.
+            - name: NEW_RELIC_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: NEW_RELIC_LICENSE_KEY
+                  optional: true
+            - name: NEW_RELIC_APP_NAME
+              value: "instant-api"
+            # New Relic OTLP gRPC endpoint (US data center). Use
+            # https://otlp.eu01.nr-data.net:4317 for EU accounts.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "https://otlp.nr-data.net:4317"
+            # VERSION is read by buildinfo at runtime (overrides the -ldflags
+            # value baked at build time). Operators bump this per release;
+            # alternatively, leave empty and rely on the image tag baked in
+            # via -ldflags -X instant.dev/common/buildinfo.Version=$VERSION
+            # in the Dockerfile (see obs track 1/4).
+            - name: VERSION
+              value: "dev"
           readinessProbe:
             httpGet:
               path: /healthz
