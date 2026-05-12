@@ -23,3 +23,7 @@ kubectl apply -f k8s/
 ## Secrets
 
 Never commit `secrets.local.yaml`. The checked-in `k8s/secrets.yaml` contains only `CHANGE_ME` placeholders.
+
+**DO NOT naive-apply `secrets.yaml` against a live cluster** — see
+[`k8s/README.md`](k8s/README.md) section "Secret operations — DO NOT naive-apply"
+and use `k8s/scripts/safe-secret-apply.sh`.
