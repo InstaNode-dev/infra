@@ -140,6 +140,33 @@ spec:
                   name: instant-secrets
                   key: MINIO_ROOT_PASSWORD
                   optional: true
+            # ── Platform admin gates ─────────────────────────────────────────
+            # Two independent gates protect /api/v1/<prefix>/customers/...:
+            #
+            #   1. ADMIN_EMAILS — comma-separated, case-insensitive allowlist.
+            #      Closed-by-default: empty/unset rejects every caller.
+            #      Read on every request, no app cache.
+            #   2. ADMIN_PATH_PREFIX — unguessable URL segment (32+ chars,
+            #      alphanumeric). Empty/unset → admin routes NOT registered
+            #      (404 platform-wide). < 32 chars or non-alphanumeric → app
+            #      refuses to start. Generate via `openssl rand -hex 32`.
+            #
+            # Both are marked `optional: true` so the api starts during
+            # initial cluster bootstrap (before secrets exist) — admin
+            # endpoints simply stay disabled until both vars are populated.
+            # See api/INTERNAL-OPS.md (private) for rotation procedure.
+            - name: ADMIN_EMAILS
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: ADMIN_EMAILS
+                  optional: true
+            - name: ADMIN_PATH_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: ADMIN_PATH_PREFIX
+                  optional: true
             # ── Observability (track 6 of 8) ──────────────────────────────────
             # NEW_RELIC_LICENSE_KEY pulled from instant-secrets. When empty or
             # set to CHANGE_ME, the Go newrelic agent fails open and logs a
