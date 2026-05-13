@@ -93,7 +93,7 @@ assert_eq "exit code is 1" "1" "$code"
 assert_contains "stderr mentions NEW_RELIC_ACCOUNT_ID" "NEW_RELIC_ACCOUNT_ID" "$out"
 
 # ----------------------------------------------------------------------------
-echo "test: --dry-run with both env vars set prints all 8 names, no API calls"
+echo "test: --dry-run with both env vars set prints all 9 names, no API calls"
 # ----------------------------------------------------------------------------
 out=$(env -i PATH="$PATH" NEW_RELIC_API_KEY=fake NEW_RELIC_ACCOUNT_ID=1234567 \
   "$APPLY" --dry-run 2>&1)
@@ -106,15 +106,18 @@ assert_contains "dry-run prints provisioning"           "instant-api — provisi
 assert_contains "dry-run prints deploy"                 "instant-api — deploy"            "$out"
 assert_contains "dry-run prints worker dashboard"       "instant-worker — River jobs"     "$out"
 
-# All 4 alert names
+# All 5 alert names
 assert_contains "dry-run prints error-rate alert"       "error rate > 1%"                 "$out"
 assert_contains "dry-run prints p95-latency alert"      "p95 latency > 500ms"             "$out"
 assert_contains "dry-run prints nats-down alert"        "NATS connection failures"        "$out"
 assert_contains "dry-run prints worker-stalled alert"   "no jobs processed in 10m"        "$out"
+assert_contains "dry-run prints api-5xx-rate alert"     "5xx rate > 1%"                   "$out"
 
 # No real HTTP traffic — the [dry-run] tag must appear on every name
+# (4 dashboards + 5 alerts = 9). Bumped from 8 when the api-5xx-rate-high
+# alert was added (PR adding alerts/api-5xx-rate-high.json).
 dryrun_count=$(echo "$out" | grep -c '^\[dry-run\]' || true)
-assert_eq "every name prefixed with [dry-run] (8 total)" "8" "$dryrun_count"
+assert_eq "every name prefixed with [dry-run] (9 total)" "9" "$dryrun_count"
 
 # ----------------------------------------------------------------------------
 echo "test: --dry-run without env vars still validates JSON + warns"
@@ -124,7 +127,7 @@ code=$?
 assert_eq "exit code is 0 with no env (dry-run)" "0" "$code"
 assert_contains "warns about unset env" "warning" "$out"
 dryrun_count=$(echo "$out" | grep -c '^\[dry-run\]' || true)
-assert_eq "still prints 8 [dry-run] entries" "8" "$dryrun_count"
+assert_eq "still prints 9 [dry-run] entries" "9" "$dryrun_count"
 
 # ----------------------------------------------------------------------------
 echo "test: every JSON file in dashboards/ and alerts/ parses cleanly"
@@ -137,7 +140,7 @@ for f in "$NR_DIR"/dashboards/*.json "$NR_DIR"/alerts/*.json; do
   fi
 done
 if [ "$broken" -eq 0 ]; then
-  echo "  ok  all 8 JSON files parse"
+  echo "  ok  all 9 JSON files parse"
   PASS=$((PASS+1))
 else
   FAIL=$((FAIL+1))
