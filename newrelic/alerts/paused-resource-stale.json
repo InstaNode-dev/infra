@@ -1,0 +1,30 @@
+{
+  "name": "instant-api — resource paused > 30d (should be terminated)",
+  "type": "NRQL",
+  "description": "WARN when any resource is still in paused state more than 30 days after its pause event with no matching resume. Paused resources still consume disk and the platform DB row; 30d+ paused indicates the lifecycle policy should have terminated them. The query relies on a `paused_age_days` field stamped by the worker's resource-lifecycle job at scan time; alert fires if any resource exceeds the threshold during the most recent scan. Source: audit_log kind = 'resource.lifecycle_scan' (worker, migration 027 era).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT max(paused_age_days) FROM Log WHERE service = 'worker' AND kind = 'resource.lifecycle_scan' AND paused_age_days IS NOT NULL"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 30,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 3600,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 300,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 86400,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

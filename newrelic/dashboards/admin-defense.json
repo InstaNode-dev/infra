@@ -1,0 +1,73 @@
+{
+  "name": "instant-api — admin defense-in-depth",
+  "description": "Access patterns and brute-force probe signal for the admin surface (PR #66+ era). Source: audit_log records with kind = 'admin.access' emitted by the admin allowlist middleware, plus Transaction events on ADMIN_PATH_PREFIX routes. Pairs with the admin-allowlist-breach + admin-probe-404-rate alerts.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Admin",
+      "description": "Admin allowlist enforcement + brute-force probe signal",
+      "widgets": [
+        {
+          "title": "admin.access hit rate by path_suffix (24h)",
+          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'admin.access' FACET path_suffix TIMESERIES AUTO SINCE 24 hours ago LIMIT 20"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "admin.access hits by user_email (24h)",
+          "layout": { "column": 7, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'admin.access' FACET user_email SINCE 24 hours ago LIMIT 25"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "ADMIN_PATH_PREFIX 4xx probe count (1h)",
+          "layout": { "column": 1, "row": 4, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Transaction WHERE appName LIKE 'instant-api%' AND request.uri LIKE '/admin/%' AND httpResponseCode LIKE '4%' SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 100 },
+              { "alertSeverity": "CRITICAL", "value": 500 }
+            ]
+          }
+        },
+        {
+          "title": "Top admin endpoints by user (24h)",
+          "layout": { "column": 5, "row": 4, "width": 8, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) AS 'hits', latest(timestamp) AS 'last seen' FROM Log WHERE service = 'api' AND kind = 'admin.access' FACET user_email, path_suffix SINCE 24 hours ago LIMIT 50"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "name": "instant-api — promote approval flow",
+  "description": "Email-link approval gate for stack promotion (PR #65 era). Tracks time-to-approval, rejection rate, and bypass detection. Source: audit_log records with kind IN ('promote.approval_requested', 'promote.approved', 'promote.rejected') emitted by api/internal/handlers/stack.go. Pairs with the promote-bypass-detected alert.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Promote",
+      "description": "Approval workflow health",
+      "widgets": [
+        {
+          "title": "Time-to-approval distribution (seconds)",
+          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.histogram" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT histogram(approval_latency_seconds, 50, 20) FROM Log WHERE service = 'api' AND kind = 'promote.approved' AND approval_latency_seconds IS NOT NULL SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Approval rejection rate (7d)",
+          "layout": { "column": 7, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT (filter(count(*), WHERE kind = 'promote.approved') / (filter(count(*), WHERE kind = 'promote.approved') + filter(count(*), WHERE kind = 'promote.rejected'))) * 100 AS 'approved %' FROM Log WHERE service = 'api' AND kind IN ('promote.approved', 'promote.rejected') SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 70 },
+              { "alertSeverity": "CRITICAL", "value": 50 }
+            ]
+          }
+        },
+        {
+          "title": "Approval requests by env (7d)",
+          "layout": { "column": 10, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.pie" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'promote.approval_requested' FACET env SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Approval funnel (requested vs approved vs rejected)",
+          "layout": { "column": 1, "row": 4, "width": 8, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind IN ('promote.approval_requested', 'promote.approved', 'promote.rejected') FACET kind TIMESERIES AUTO SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Pending approvals (requested but not yet resolved)",
+          "layout": { "column": 9, "row": 4, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT filter(uniqueCount(approval_token), WHERE kind = 'promote.approval_requested') - filter(uniqueCount(approval_token), WHERE kind IN ('promote.approved', 'promote.rejected')) AS 'pending' FROM Log WHERE service = 'api' AND kind IN ('promote.approval_requested', 'promote.approved', 'promote.rejected') SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        }
+      ]
+    }
+  ]
+}
