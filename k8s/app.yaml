@@ -4,6 +4,20 @@ kind: Deployment
 metadata:
   name: instant-api
   namespace: instant
+  labels:
+    app: instant-api
+    # instanode.dev/image-pinned — informational label that flips to "true"
+    # once this Deployment's image tag matches the production regex
+    # v\d+\.\d+\.\d+.* AND the pin-prod-images workflow has run for it.
+    # Audit: `kubectl get deploy -A -l instanode.dev/image-pinned=true`.
+    # See docs/IMAGE-RETENTION-POLICY.md for the policy + recovery flow.
+    instanode.dev/image-pinned: "true"
+  annotations:
+    # Retention window declared at the Deployment level so operators can
+    # see the policy without leaving kubectl. The actual retention is
+    # enforced by .github/workflows/pin-prod-images.yml + the absence of
+    # any delete-old-versions workflow that targets prod tags.
+    instanode.dev/image-pin-retention-days: "730"
 spec:
   replicas: 1
   selector:
