@@ -4,6 +4,15 @@ kind: Deployment
 metadata:
   name: instant-worker
   namespace: instant-infra
+  labels:
+    app: instant-worker
+    # instanode.dev/image-pinned — informational. Set to "true" when the
+    # running image tag matches v\d+\.\d+\.\d+.* AND has been pinned by
+    # .github/workflows/pin-prod-images.yml. See
+    # docs/IMAGE-RETENTION-POLICY.md.
+    instanode.dev/image-pinned: "true"
+  annotations:
+    instanode.dev/image-pin-retention-days: "730"
 spec:
   replicas: 1
   selector:

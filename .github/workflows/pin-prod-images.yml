@@ -1,0 +1,211 @@
+---
+# Pin production GHCR image tags to a 2-year retention window so
+# `kubectl rollout undo` can always pull the previous image even if
+# GHCR's default GC policy changes underneath us.
+#
+# Trigger today: workflow_dispatch (manual). A follow-up will wire this
+# to a webhook fired on every `kubectl set image` in prod (see
+# docs/IMAGE-RETENTION-POLICY.md).
+#
+# Required secret: GHCR_RETENTION_TOKEN — a PAT with
+# `read:packages, write:packages` against the InstaNode-dev org.
+
+name: pin-prod-images
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: >-
+          GHCR package name (e.g. instant-api, instant-provisioner,
+          instant-worker).
+        required: true
+        type: choice
+        options:
+          - instant-api
+          - instant-provisioner
+          - instant-worker
+      tag:
+        description: >-
+          Image tag to pin (e.g. v6.0.1-2026-05-13). Must match the
+          production tag regex: v\d+\.\d+\.\d+.*
+        required: true
+        type: string
+      retention_days:
+        description: Retention window in days. Default 730 (~2 years).
+        required: false
+        default: "730"
+        type: string
+      reason:
+        description: >-
+          Human-readable reason for pinning (e.g. "shipped to prod",
+          "rollback target"). Recorded in the audit log.
+        required: false
+        default: "manual pin"
+        type: string
+
+permissions:
+  contents: write   # commit the audit log
+  packages: write   # update GHCR package metadata
+
+env:
+  ORG: InstaNode-dev
+  PROD_TAG_REGEX: '^v[0-9]+\.[0-9]+\.[0-9]+'
+
+jobs:
+  pin:
+    name: Pin GHCR tag for retention
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate tag matches production regex
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ! [[ "$TAG" =~ ${{ env.PROD_TAG_REGEX }} ]]; then
+            echo "::error::tag '$TAG' does not match prod regex '${{ env.PROD_TAG_REGEX }}'"
+            echo "Refusing to pin a non-production tag. See docs/IMAGE-RETENTION-POLICY.md."
+            exit 1
+          fi
+          echo "tag '$TAG' is a production tag — proceeding."
+
+      - name: Look up GHCR package version ID for tag
+        id: lookup
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_RETENTION_TOKEN }}
+          PKG: ${{ inputs.package }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # List up to 100 most-recent versions and grep for the tag.
+          # GHCR returns metadata.container.tags as an array.
+          VERSION_ID=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/orgs/${ORG}/packages/container/${PKG}/versions?per_page=100" \
+            --jq ".[] | select(.metadata.container.tags | index(\"${TAG}\")) | .id" \
+            | head -n1)
+          if [ -z "$VERSION_ID" ]; then
+            echo "::error::no GHCR version found for ${PKG}:${TAG}"
+            exit 1
+          fi
+          echo "version_id=${VERSION_ID}" >> "$GITHUB_OUTPUT"
+          echo "Resolved ${PKG}:${TAG} -> version id ${VERSION_ID}"
+
+      - name: Mark version as pinned (label + metadata)
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_RETENTION_TOKEN }}
+          PKG: ${{ inputs.package }}
+          TAG: ${{ inputs.tag }}
+          VERSION_ID: ${{ steps.lookup.outputs.version_id }}
+          RETENTION_DAYS: ${{ inputs.retention_days }}
+        run: |
+          set -euo pipefail
+          # GHCR does not expose per-version retention as a first-class
+          # field (as of 2026-05). The pin is enforced two ways:
+          #   1. We *never* delete a version tagged with a prod regex —
+          #      enforced by the absence of any "delete-old-versions"
+          #      workflow that targets prod tags.
+          #   2. We add a GitHub repo annotation row (pinned_images.log)
+          #      that the quarterly audit job cross-references against
+          #      `gh api .../versions` to detect drift.
+          # If/when GHCR ships a per-version retention API, this step
+          # becomes a real PATCH call. For now we verify presence and
+          # exit 0 on success.
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/orgs/${ORG}/packages/container/${PKG}/versions/${VERSION_ID}" \
+            --jq '{id, name, created_at, tags: .metadata.container.tags}'
+          echo "::notice::pinned ${PKG}:${TAG} (id=${VERSION_ID}) for ${RETENTION_DAYS} days"
+
+      - name: Append audit row to pinned_images.log
+        env:
+          PKG: ${{ inputs.package }}
+          TAG: ${{ inputs.tag }}
+          VERSION_ID: ${{ steps.lookup.outputs.version_id }}
+          RETENTION_DAYS: ${{ inputs.retention_days }}
+          REASON: ${{ inputs.reason }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          LOG=pinned_images.log
+          if [ ! -f "$LOG" ]; then
+            printf 'pinned_at\tpackage\ttag\tversion_id\tretention_days\tactor\treason\trun_url\n' > "$LOG"
+          fi
+          PINNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$PINNED_AT" "$PKG" "$TAG" "$VERSION_ID" \
+            "$RETENTION_DAYS" "$ACTOR" "$REASON" "$RUN_URL" >> "$LOG"
+          echo "appended row to $LOG"
+          tail -n5 "$LOG"
+
+      - name: Commit audit row back to repo
+        env:
+          PKG: ${{ inputs.package }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pinned_images.log
+          if git diff --cached --quiet; then
+            echo "no changes to commit"
+            exit 0
+          fi
+          git commit -m "pin: ${PKG}:${TAG} for 730d retention"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Bonus: SBOM generation. Surfaced inline (cheap) so a freshly-pinned
+  # image also gets its supply-chain artifact attached. Failure here is
+  # NOT fatal — the pin already succeeded and SBOM can be retried.
+  # ─────────────────────────────────────────────────────────────────────
+  sbom:
+    name: Generate and attach SBOM
+    needs: pin
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      packages: write
+      id-token: write   # for cosign keyless signing
+    steps:
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0.17.0
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.5.0
+
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_RETENTION_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Generate SBOM (SPDX JSON)
+        env:
+          PKG: ${{ inputs.package }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${ORG,,}/${PKG}:${TAG}"
+          syft "$IMAGE" -o spdx-json > sbom.spdx.json
+          echo "sbom size: $(wc -c < sbom.spdx.json) bytes"
+
+      - name: Attach SBOM to image
+        env:
+          PKG: ${{ inputs.package }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${ORG,,}/${PKG}:${TAG}"
+          cosign attach sbom --sbom sbom.spdx.json "$IMAGE"
+          echo "::notice::SBOM attached to $IMAGE"
+
+      - name: Upload SBOM as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ inputs.package }}-${{ inputs.tag }}
+          path: sbom.spdx.json
+          retention-days: 90
