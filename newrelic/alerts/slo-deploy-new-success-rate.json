@@ -1,0 +1,37 @@
+{
+  "name": "instant-api — SLO POST /deploy/new success rate < 99.0% (30m)",
+  "type": "NRQL",
+  "description": "Page when the rolling-30m success rate of POST /deploy/new drops below the 30-day SLO target (99.0%). Success = httpResponseCode < 500. /deploy/new is the bundle wedge — multi-step Kaniko + k8s + cert-manager flow → looser threshold than /db/new but still critical for monetization. Sourced from Transaction events emitted by the Fiber NR middleware.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT percentage(count(*), WHERE numeric(httpResponseCode) < 500) FROM Transaction WHERE appName LIKE 'instant-api%' AND service = 'api' AND request.uri = '/deploy/new'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "BELOW",
+      "threshold": 99.0,
+      "thresholdDuration": 1800,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "BELOW",
+      "threshold": 99.5,
+      "thresholdDuration": 1800,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 1800,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
