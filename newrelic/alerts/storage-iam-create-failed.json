@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — storage IAM user create failures > 0 (5m) [signup-blocking]",
+  "type": "NRQL",
+  "description": "Page when any storage IAM user creation fails. Storage IAM provisioning happens in the /storage/new hot path (W9-C1); a failure here means a new paying customer cannot get a usable storage bucket and the signup-to-first-byte path is broken. Source: the instant_storage_iam_users_failed_total Prometheus counter scraped into Metric, labelled by op (create | delete). The metric is exported by api/internal/handlers/storage.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(newrelic.timeslice.value) FROM Metric WHERE metricTimesliceName = 'Custom/Storage/IamUsersFailed/create'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 1800,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
