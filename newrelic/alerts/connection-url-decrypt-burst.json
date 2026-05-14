@@ -1,0 +1,38 @@
+{
+  "name": "instant-api — connection_url.decrypted > 50/h per team [credential harvesting]",
+  "type": "NRQL",
+  "description": "Warn when a single team decrypts more than 50 connection URLs in a rolling 1h window. Legitimate dashboard usage is bounded (one resource list call per page-load, then targeted reveals). A burst means either a runaway script or — worse — a compromised session token scraping every credential before rotation. Source: the connection_url.decrypted audit event emitted by api/internal/crypto in the W7-C audit pass; team_id is the facet that drives the per-team threshold.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind = 'connection_url.decrypted' FACET team_id"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 50,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    },
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 200,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

@@ -1,3 +1,106 @@
+# newrelic/ change log
+
+Append-only log of dashboard and alert changes shipped from this repo. Pair every
+entry with the audit-kind emit sites or metric exporters it depends on — the
+dashboard/alert is dead unless the upstream service is also shipped.
+
+## W10 follow-up (2026-05-14)
+
+PR: `feat/w10-nr-observability-followup-fresh`.
+
+Adds dashboards + alerts for the ~25 audit kinds shipped in waves W4-B3,
+W5-B-api, W7-A through W7-G, W8 (PATCH /team), and W9-C1 (storage IAM).
+These are the kinds A1 (the Wave-4 NR rollup, still uncommitted at the start
+of today's session) did not cover — A1 only knew about the surfaces that
+existed when it was written.
+
+### Files added
+
+Dashboards (2):
+- `dashboards/audit-feed-wave9.json` — one billboard tile per new audit kind
+  ("hits last 24h") plus a tier-faceted page for `subscription.*`,
+  `backup.*`, `deploy.failed by team`, and `vault.*` traffic shape.
+- `dashboards/customer-visible-backup-health.json` — operator-facing board
+  for support triage: per-team success rate, p50/p95 duration, failure
+  reasons, last-50 backup-op table for paste-into-ticket workflow.
+
+Alerts (5):
+- `alerts/team-deletion-failed.json` — CRITICAL on any
+  `team.deletion_failed` event in 1h (manual reconcile needed).
+- `alerts/storage-iam-create-failed.json` — CRITICAL on any
+  `instant_storage_iam_users_failed_total{op="create"}` increment in 5m
+  (signup-blocking).
+- `alerts/connection-url-decrypt-burst.json` — WARN > 50/h,
+  CRITICAL > 200/h per team on `connection_url.decrypted`
+  (credential-harvesting indicator).
+- `alerts/deploy-failure-rate-by-team.json` — WARN 15%, CRITICAL 30%
+  rolling 1h failure rate, faceted by `team_id` (extends A1's aggregate
+  alert with per-customer breakdown).
+- `alerts/backup-requested-no-followup.json` — WARN on `backup.requested`
+  with no matching `backup.succeeded` / `backup.failed` for the same
+  `backup_id` within 30m (stuck-worker indicator).
+
+### Audit kinds wired
+
+| Kind | Source PR | Emit site (expected) | Status |
+|---|---|---|---|
+| `team.updated` | W8 | `api/internal/handlers/team.go` PATCH | merged to api |
+| `team.deletion_requested` | W7-D | `api/internal/handlers/team.go` | merged to api |
+| `team.deletion_canceled` | W7-D | `api/internal/handlers/team.go` | merged to api |
+| `team.tombstoned` | W7-D | `worker/internal/jobs/tombstone.go` | merged to api |
+| `team.deletion_failed` | W7-D | `worker/internal/jobs/tombstone.go` | merged to api |
+| `resource.read` | W7-C | `api/internal/handlers/resource.go` | merged to api |
+| `resource.list_by_team` | W7-C | `api/internal/handlers/resource.go` | merged to api |
+| `connection_url.decrypted` | W7-C | `api/internal/crypto/decrypt.go` | merged to api |
+| `resource.metrics_queried` | W7-F | `api/internal/handlers/metrics.go` | merged to api |
+| `auth.login` | W7-A wave-4 A3 | `api/internal/handlers/auth.go` | merged to api |
+| `vault.read` / `vault.write` | W7-A wave-4 A3 | `api/internal/vault/*.go` | merged to api |
+| `deploy.created` / `deploy.healthy` / `deploy.failed` | W7-A wave-4 A3 | `api/internal/handlers/deploy.go` | merged to api |
+| `family.bulk_twin` | W4-B3 | `api/internal/handlers/family.go` | merged to api |
+| `backup.requested` / `restore.requested` | W5-B-api | `api/internal/handlers/backup.go` | merged to api |
+| `storage.iam_user_created` / `storage.iam_user_deleted` | W9-C1 | `api/internal/handlers/storage.go` | merged to api |
+
+### Cross-link: emit sites that may not be in main yet
+
+The following dashboard + alert artifacts depend on emit sites that have
+shipped to the `api/` repo but may not have reached the `main` branch of
+this infra repo's deploy target by the time these dashboards apply:
+
+- `connection-url-decrypt-burst.json` depends on `api` PR W7-C (audit pass
+  on the crypto package). If that PR isn't deployed, the alert never fires
+  (count = 0) — safe degradation.
+- `team-deletion-failed.json` depends on `worker` PR W7-D (tombstone job
+  emits the failure audit). Without it, the alert never fires.
+- `storage-iam-create-failed.json` depends on `api` PR W9-C1 exporting the
+  `instant_storage_iam_users_failed_total` counter. Verify the metric is
+  scraped before relying on this alert.
+- `backup-requested-no-followup.json` depends on `api` PR W5-B-api
+  emitting all three of `backup.requested`, `backup.succeeded`,
+  `backup.failed` with a matching `backup_id` field.
+- `deploy-failure-rate-by-team.json` requires `deploy.healthy` and
+  `deploy.failed` to carry `team_id` in their log fields — both confirmed
+  in `api/internal/handlers/deploy.go` today.
+
+### Counts
+
+- 2 new dashboards (20 widgets + 8 widgets = 28 widgets total)
+- 5 new alert conditions
+- Apply.sh discovers them automatically (glob `dashboards/*.json` and
+  `alerts/*.json`). The test in `tests/apply.test.sh` was bumped to 33
+  expected names (26 from W5-D baseline + 7 added here).
+
+### Conflict surface
+
+- A1 (the Wave-4 NR rollup) shipped under `newrelic/dashboards/` and
+  `newrelic/alerts/`. All filenames here are new — no path conflict on
+  the artifacts themselves.
+- W5-D also shipped under `newrelic/dashboards/` and `newrelic/alerts/`
+  with different filenames — no conflict.
+- This `CHANGES.md` is new in this branch; entries below are sorted
+  newest-first to keep dated rollups readable.
+
+---
+
 # CHANGES — NR dashboard + alert rollup (2026-05-13)
 
 Pairs the past week of shipped surfaces (PR #15 worker churn job onward) with
