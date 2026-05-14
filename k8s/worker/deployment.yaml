@@ -31,13 +31,19 @@ spec:
           ports:
             - containerPort: 8091
               name: liveness
-          livenessProbe:
+          # Probe split (2026-05-13): /healthz checks River queue connectivity
+          # + DB pool (slow on cold start); /livez is process-only. Worker
+          # boots after migrations finish (it owns no migrations of its own),
+          # but heavy job replay on restart can stall /healthz briefly.
+          # See PR body for the worker follow-up adding GET /livez.
+          # Until that handler ships, /livez 404s and liveness falls back to
+          # failureThreshold=6 grace (≈3 min).
+          startupProbe:
             httpGet:
               path: /healthz
               port: 8091
-            initialDelaySeconds: 15
-            periodSeconds: 20
-            failureThreshold: 3
+            periodSeconds: 10
+            failureThreshold: 60     # 10 min total — covers job-replay startup
           readinessProbe:
             httpGet:
               path: /healthz
@@ -45,6 +51,13 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez          # process-only; see startupProbe note
+              port: 8091
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            failureThreshold: 6      # 6 × 30s = 3 min before SIGKILL
           env:
             # ── Observability (track 6 of 8) ──────────────────────────────────
             # NEW_RELIC_LICENSE_KEY pulled from instant-infra-secrets. When

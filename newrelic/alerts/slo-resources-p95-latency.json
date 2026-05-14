@@ -1,0 +1,37 @@
+{
+  "name": "instant-api — SLO GET /api/v1/resources p95 > 200ms (10m)",
+  "type": "NRQL",
+  "description": "Page when the p95 latency of GET /api/v1/resources exceeds the 30-day SLO target (200ms) for 10 minutes. This is the dashboard read path — every authenticated UI page calls it, so latency directly drives perceived dashboard responsiveness. Sourced from Transaction events emitted by the Fiber NR middleware.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT percentile(duration, 95) * 1000 FROM Transaction WHERE appName LIKE 'instant-api%' AND service = 'api' AND request.uri = '/api/v1/resources'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 200,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 150,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 1200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

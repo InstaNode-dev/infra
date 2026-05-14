@@ -1,0 +1,167 @@
+{
+  "name": "instant-api — SLO rollup",
+  "description": "Service Level Objective rollup for instant-api. Tracks success rate + latency SLIs for the four most customer-visible endpoints (POST /db/new, POST /deploy/new, GET /api/v1/resources, POST /webhook/new) plus per-endpoint break-downs, top errors, and provisioner gRPC latency. SLO budget burn widgets show % of 30-day error/latency budget remaining; red below 25%. Sourced from APM Transaction events emitted by the Fiber NR middleware in track 3.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "SLOs",
+      "description": "Success-rate, latency, and budget-burn SLIs for the four most customer-visible endpoints",
+      "widgets": [
+        {
+          "title": "Request success rate by endpoint (top 10, 7d)",
+          "layout": { "column": 1, "row": 1, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT percentage(count(*), WHERE numeric(httpResponseCode) < 500) AS 'success %' FROM Transaction WHERE appName LIKE 'instant-api%' AND service = 'api' FACET request.uri SINCE 7 days ago LIMIT 10"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "p50 / p95 / p99 latency by endpoint (1h, 5m bucket)",
+          "layout": { "column": 1, "row": 4, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT percentile(duration, 50, 95, 99) FROM Transaction WHERE appName LIKE 'instant-api%' AND service = 'api' FACET request.uri TIMESERIES 5 minutes SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Provisioning success rate by resource type (7d)",
+          "layout": { "column": 1, "row": 7, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT percentage(count(*), WHERE numeric(httpResponseCode) IN (200, 201, 202)) AS 'success %' FROM Transaction WHERE appName LIKE 'instant-api%' AND service = 'api' AND request.uri LIKE '%/new' FACET request.uri SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Top error endpoints (5xx, last 24h)",
+          "layout": { "column": 7, "row": 7, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) AS '5xx count' FROM Transaction WHERE appName LIKE 'instant-api%' AND service = 'api' AND numeric(httpResponseCode) >= 500 FACET request.uri, httpResponseCode SINCE 24 hours ago LIMIT 20"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "SLO budget remaining — POST /db/new (target 99.5% / 30d)",
+          "layout": { "column": 1, "row": 10, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.bullet" },
+          "rawConfiguration": {
+            "limit": 100,
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT clamp_max(clamp_min((percentage(count(*), WHERE numeric(httpResponseCode) < 500) - 99.5) / 0.5 * 100, 0), 100) AS 'budget % remaining' FROM Transaction WHERE appName LIKE 'instant-api%' AND service = 'api' AND request.uri = '/db/new' SINCE 30 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 50 },
+              { "alertSeverity": "CRITICAL", "value": 25 }
+            ]
+          }
+        },
+        {
+          "title": "SLO budget remaining — POST /deploy/new (target 99.0% / 30d)",
+          "layout": { "column": 4, "row": 10, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.bullet" },
+          "rawConfiguration": {
+            "limit": 100,
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT clamp_max(clamp_min((percentage(count(*), WHERE numeric(httpResponseCode) < 500) - 99.0) / 1.0 * 100, 0), 100) AS 'budget % remaining' FROM Transaction WHERE appName LIKE 'instant-api%' AND service = 'api' AND request.uri = '/deploy/new' SINCE 30 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 50 },
+              { "alertSeverity": "CRITICAL", "value": 25 }
+            ]
+          }
+        },
+        {
+          "title": "SLO budget remaining — GET /api/v1/resources (target p95 < 200ms / 30d)",
+          "layout": { "column": 7, "row": 10, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.bullet" },
+          "rawConfiguration": {
+            "limit": 100,
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT clamp_max(clamp_min((200 - percentile(duration, 95) * 1000) / 200 * 100, 0), 100) AS 'budget % remaining' FROM Transaction WHERE appName LIKE 'instant-api%' AND service = 'api' AND request.uri = '/api/v1/resources' SINCE 30 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 50 },
+              { "alertSeverity": "CRITICAL", "value": 25 }
+            ]
+          }
+        },
+        {
+          "title": "SLO budget remaining — POST /webhook/new (target 99.9% / 30d)",
+          "layout": { "column": 10, "row": 10, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.bullet" },
+          "rawConfiguration": {
+            "limit": 100,
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT clamp_max(clamp_min((percentage(count(*), WHERE numeric(httpResponseCode) < 500) - 99.9) / 0.1 * 100, 0), 100) AS 'budget % remaining' FROM Transaction WHERE appName LIKE 'instant-api%' AND service = 'api' AND request.uri = '/webhook/new' SINCE 30 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 50 },
+              { "alertSeverity": "CRITICAL", "value": 25 }
+            ]
+          }
+        },
+        {
+          "title": "Provisioner gRPC latency p50/p95/p99 (1h) — TODO confirm Span event source",
+          "layout": { "column": 1, "row": 13, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT percentile(duration.ms, 50, 95, 99) FROM Span WHERE service.name = 'instant-api' AND name LIKE 'grpc.%' TIMESERIES 1 minute SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "About this dashboard",
+          "layout": { "column": 1, "row": 16, "width": 12, "height": 2 },
+          "visualization": { "id": "viz.markdown" },
+          "rawConfiguration": {
+            "text": "## SLO definitions\n\n| SLI | Target | Window | Rationale |\n|---|---|---|---|\n| `POST /db/new` success rate | > 99.5% | 30d | Canonical agent provisioning path. The wedge — must be near-perfect. |\n| `POST /deploy/new` success rate | > 99.0% | 30d | The bundle wedge (zero-click deploy). Multi-step Kaniko + k8s + cert-manager pipeline → slightly looser target. |\n| `GET /api/v1/resources` p95 latency | < 200ms | 30d | Dashboard read path; every authenticated UI page hits this. Latency drives perceived dashboard speed. |\n| `POST /webhook/new` success rate | > 99.9% | 30d | Smallest blast radius (Redis-only), so failures are cheapest to fix and should be rarest. |\n\nBudget-remaining widgets show how much of the 30-day error budget is still available (0% = SLO breached). Red below 25% — page the team.\n\n**Provisioner gRPC latency** widget assumes `Span` events are emitted by the api repo's OTEL tracer for gRPC calls to `instant-provisioner.instant-infra.svc.cluster.local:50051`. If no data shows up, confirm `OTEL_EXPORTER_OTLP_ENDPOINT` is set in `k8s/app.yaml` and gRPC client instrumentation is wired in api/main.go. Until confirmed, this widget is a no-op."
+          }
+        }
+      ]
+    }
+  ]
+}
