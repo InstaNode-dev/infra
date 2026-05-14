@@ -157,13 +157,31 @@ spec:
                 secretKeyRef:
                   name: minio-secrets
                   key: MINIO_ROOT_PASSWORD
+          # Probe split (2026-05-13): readiness hits the /healthz sidecar on
+          # port 8092 (checks DB + pool init). Liveness hits /livez on the
+          # same sidecar — process-only check that returns 200 unconditionally
+          # so a slow pool warm-up can't kill a healthy pod. Startup probe
+          # gives 10 minutes for pool pre-creation before liveness takes over.
+          # See PR body for the api/provisioner follow-up adding GET /livez.
+          # Until that handler ships, /livez 404s and liveness falls back to
+          # failureThreshold=6 grace (≈3 min).
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8092
+            periodSeconds: 10
+            failureThreshold: 60     # 10 min total — covers hot-pool pre-creation
           readinessProbe:
-            tcpSocket:
-              port: 50051
+            httpGet:
+              path: /healthz
+              port: 8092
             initialDelaySeconds: 5
             periodSeconds: 10
+            failureThreshold: 3
           livenessProbe:
-            tcpSocket:
-              port: 50051
+            httpGet:
+              path: /livez          # process-only; see startupProbe note
+              port: 8092
             initialDelaySeconds: 15
             periodSeconds: 30
+            failureThreshold: 6      # 6 × 30s = 3 min before SIGKILL

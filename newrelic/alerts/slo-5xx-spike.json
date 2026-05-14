@@ -1,0 +1,37 @@
+{
+  "name": "instant-api — SLO any-endpoint 5xx spike > 5% (5m)",
+  "type": "NRQL",
+  "description": "Critical: page when ANY single endpoint's 5xx rate exceeds 5% for 5 minutes. This complements the broader instant-api 5xx-rate-high alert (which fires on aggregate 5xx > 1% across all endpoints) by catching localized regressions that don't move the overall rate enough to trip the global alert — e.g. /webhook/new failing 100% while everything else is healthy. FACET request.uri so each affected endpoint opens its own incident. Sourced from Transaction events emitted by the Fiber NR middleware.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT percentage(count(*), WHERE numeric(httpResponseCode) >= 500) FROM Transaction WHERE appName LIKE 'instant-api%' AND service = 'api' FACET request.uri"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 5.0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 2.0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

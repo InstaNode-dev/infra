@@ -204,18 +204,33 @@ spec:
             # in the Dockerfile (see obs track 1/4).
             - name: VERSION
               value: "dev"
+          # Probe split (2026-05-13): /healthz checks DB connectivity +
+          # migration completion (slow on cold start); /livez is process-only
+          # ("alive, may not be ready"). Without the split, livenessProbe
+          # fires before migrations finish and k8s SIGKILLs a healthy pod
+          # mid-migration. See PR body for the api repo follow-up adding
+          # GET /livez. Until that handler ships, /livez 404s and liveness
+          # will fail open via failureThreshold=6 (≈3 min of grace).
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 60     # 10 min total — covers migration-heavy boots
           readinessProbe:
             httpGet:
               path: /healthz
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+            failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /livez          # process-only check; see startupProbe note
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 30
+            failureThreshold: 6      # 6 × 30s = 3 min before SIGKILL
 ---
 apiVersion: v1
 kind: Service

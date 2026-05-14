@@ -100,11 +100,12 @@ out=$(env -i PATH="$PATH" NEW_RELIC_API_KEY=fake NEW_RELIC_ACCOUNT_ID=1234567 \
 code=$?
 assert_eq "exit code is 0" "0" "$code"
 
-# All 4 original dashboard names
+# All 5 original dashboard names (4 original + SLO rollup)
 assert_contains "dry-run prints api-overview"           "instant-api — overview"          "$out"
 assert_contains "dry-run prints provisioning"           "instant-api — provisioning"      "$out"
 assert_contains "dry-run prints deploy"                 "instant-api — deploy"            "$out"
 assert_contains "dry-run prints worker dashboard"       "instant-worker — River jobs"     "$out"
+assert_contains "dry-run prints slo-rollup"             "instant-api — SLO rollup"        "$out"
 
 # 5 new dashboard names (nr-config-rollup PR)
 assert_contains "dry-run prints admin-defense"          "admin defense-in-depth"          "$out"
@@ -113,12 +114,16 @@ assert_contains "dry-run prints billing-dunning"        "billing dunning + prici
 assert_contains "dry-run prints resource-lifecycle"     "resource pause/resume + deploy lifecycle" "$out"
 assert_contains "dry-run prints ops-rollup"             "ops rollup"                      "$out"
 
-# All 5 original alert names
+# All 9 original alert names (5 base + 4 SLO)
 assert_contains "dry-run prints error-rate alert"       "error rate > 1%"                 "$out"
 assert_contains "dry-run prints p95-latency alert"      "p95 latency > 500ms"             "$out"
 assert_contains "dry-run prints nats-down alert"        "NATS connection failures"        "$out"
 assert_contains "dry-run prints worker-stalled alert"   "no jobs processed in 10m"        "$out"
 assert_contains "dry-run prints api-5xx-rate alert"     "5xx rate > 1%"                   "$out"
+assert_contains "dry-run prints slo-db-new alert"       "SLO POST /db/new success"        "$out"
+assert_contains "dry-run prints slo-deploy-new alert"   "SLO POST /deploy/new success"    "$out"
+assert_contains "dry-run prints slo-resources alert"    "SLO GET /api/v1/resources"       "$out"
+assert_contains "dry-run prints slo-5xx-spike alert"    "SLO any-endpoint 5xx spike"      "$out"
 
 # 7 new alert names (nr-config-rollup PR)
 assert_contains "dry-run prints admin-allowlist-breach"  "admin.access from non-allowlist user" "$out"
@@ -130,11 +135,12 @@ assert_contains "dry-run prints deploy-failure-rate"     "deploy failure rate > 
 assert_contains "dry-run prints deploy-time-degraded"    "median deploy time > 5 min"      "$out"
 
 # No real HTTP traffic — the [dry-run] tag must appear on every name
-# (9 dashboards + 12 alerts = 21). Bumped from 9 when the nr-config-rollup
-# PR added 5 dashboards + 7 alerts; previously bumped from 8 when the
-# api-5xx-rate-high alert was added.
+# (10 dashboards + 16 alerts = 26). Bumped from 21 when this PR (W5-D)
+# added the SLO rollup dashboard + 4 SLO alerts (slo-db-new, slo-deploy-new,
+# slo-resources, slo-5xx-spike) on top of the nr-config-rollup baseline of
+# 9 dashboards + 12 alerts = 21.
 dryrun_count=$(echo "$out" | grep -c '^\[dry-run\]' || true)
-assert_eq "every name prefixed with [dry-run] (21 total)" "21" "$dryrun_count"
+assert_eq "every name prefixed with [dry-run] (26 total)" "26" "$dryrun_count"
 
 # ----------------------------------------------------------------------------
 echo "test: --dry-run without env vars still validates JSON + warns"
@@ -144,7 +150,7 @@ code=$?
 assert_eq "exit code is 0 with no env (dry-run)" "0" "$code"
 assert_contains "warns about unset env" "warning" "$out"
 dryrun_count=$(echo "$out" | grep -c '^\[dry-run\]' || true)
-assert_eq "still prints 21 [dry-run] entries" "21" "$dryrun_count"
+assert_eq "still prints 26 [dry-run] entries" "26" "$dryrun_count"
 
 # ----------------------------------------------------------------------------
 echo "test: every JSON file in dashboards/ and alerts/ parses cleanly"
@@ -157,7 +163,7 @@ for f in "$NR_DIR"/dashboards/*.json "$NR_DIR"/alerts/*.json; do
   fi
 done
 if [ "$broken" -eq 0 ]; then
-  echo "  ok  all 21 JSON files parse"
+  echo "  ok  all 26 JSON files parse"
   PASS=$((PASS+1))
 else
   FAIL=$((FAIL+1))

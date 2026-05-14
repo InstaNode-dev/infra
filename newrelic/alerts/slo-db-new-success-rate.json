@@ -1,0 +1,37 @@
+{
+  "name": "instant-api — SLO POST /db/new success rate < 99.5% (30m)",
+  "type": "NRQL",
+  "description": "Page when the rolling-30m success rate of POST /db/new drops below the 30-day SLO target (99.5%). Success = httpResponseCode < 500; 5xx counts as a failure. Sourced from Transaction events emitted by the Fiber NR middleware. POST /db/new is the canonical agent provisioning path — sustained failure means the wedge is broken.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT percentage(count(*), WHERE numeric(httpResponseCode) < 500) FROM Transaction WHERE appName LIKE 'instant-api%' AND service = 'api' AND request.uri = '/db/new'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "BELOW",
+      "threshold": 99.5,
+      "thresholdDuration": 1800,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "BELOW",
+      "threshold": 99.8,
+      "thresholdDuration": 1800,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 1800,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
