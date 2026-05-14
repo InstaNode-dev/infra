@@ -62,15 +62,30 @@ spec:
                   name: instant-infra-secrets
                   key: TEMPORAL_API_KEY
                   optional: true
+          # Probe split (2026-05-13): /health checks Temporal + DB connectivity
+          # (slow on cold start); /livez is process-only. Migrator is the most
+          # at-risk service for the migration-mid-flight kill scenario because
+          # it literally orchestrates long-running workflow migrations.
+          # See PR body for the migrator follow-up adding GET /livez.
+          # Until that handler ships, /livez 404s and liveness falls back to
+          # failureThreshold=6 grace (≈3 min).
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8090
+            periodSeconds: 10
+            failureThreshold: 60     # 10 min total — covers Temporal connect + DB warm-up
           readinessProbe:
             httpGet:
               path: /health
               port: 8090
             initialDelaySeconds: 5
             periodSeconds: 10
+            failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /health
+              path: /livez          # process-only; see startupProbe note
               port: 8090
             initialDelaySeconds: 15
             periodSeconds: 30
+            failureThreshold: 6      # 6 × 30s = 3 min before SIGKILL
