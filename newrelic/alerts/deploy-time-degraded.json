@@ -1,0 +1,37 @@
+{
+  "name": "instant-api — median deploy time > 5 min (build infra degradation)",
+  "type": "NRQL",
+  "description": "WARN when the median time from deploy.created to deploy.healthy exceeds 5 minutes over a rolling 1h window. A healthy nginx-tarball baseline is ~30s; >5min sustained means Kaniko build is degraded, the image registry is slow, or k8s pod scheduling is stuck. Source: audit_log kind = 'deploy.healthy' with `deploy_ready_seconds` field, emitted by api/internal/handlers/deploy.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT percentile(deploy_ready_seconds, 50) FROM Log WHERE service = 'api' AND kind = 'deploy.healthy' AND deploy_ready_seconds IS NOT NULL"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 600,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 300,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

@@ -1,0 +1,38 @@
+{
+  "name": "instant-api — payment.grace_terminated spike > 5x rolling 7d avg",
+  "type": "NRQL",
+  "description": "WARN when grace_terminated events in the last hour exceed 5x the rolling 7-day per-hour average — mass payment-method failure signal (PSP outage, expired-card wave, fraud-block, etc.). NRQL static thresholds can't natively reference rolling averages, so this fires on absolute hourly count; the threshold is set from the expected per-hour 7d baseline (operator should re-tune after 30d of data). For a true ratio alert, use a Baseline-condition variant once the surface has steady traffic. Source: audit_log kind = 'payment.grace_terminated' emitted by api/internal/handlers/billing.go (PR #66 era).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'payment.grace_terminated'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 25,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 10,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

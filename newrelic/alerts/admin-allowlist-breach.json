@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — admin.access from non-allowlist user",
+  "type": "NRQL",
+  "description": "CRITICAL. Fires on any admin.access audit_log event from a user whose email is NOT in the configured ADMIN_EMAILS allowlist. This means the allowlist middleware failed open and an unauthorized user reached an admin handler. The query uses an `allowed = false` tag the middleware sets when it falls through the allowlist; if the middleware is correctly closed-by-default this tag is impossible to see in steady state. Source: audit_log kind = 'admin.access' emitted by the admin middleware (PR #66+).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'admin.access' AND allowed = false"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 60,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 60,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
