@@ -1,0 +1,37 @@
+{
+  "name": "instant-api — deploy failure rate > 30% (1h)",
+  "type": "NRQL",
+  "description": "CRITICAL when deploy failures exceed 30% of created deploys over the last hour — build-infra degradation signal (Kaniko OOMs, registry pulls failing, k8s scheduler stuck, ingress-cert provisioning broken). Pairs with the deploy success-rate widget in the resource-lifecycle dashboard. Source: audit_log kind IN ('deploy.created', 'deploy.failed') emitted by api/internal/handlers/deploy.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT (filter(uniqueCount(deploy_id), WHERE kind = 'deploy.failed') / filter(uniqueCount(deploy_id), WHERE kind = 'deploy.created')) * 100 FROM Log WHERE service = 'api' AND kind IN ('deploy.created', 'deploy.failed')"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 30,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 15,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

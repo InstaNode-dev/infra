@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — promote.approved without prior approval_requested (non-dev)",
+  "type": "NRQL",
+  "description": "CRITICAL. Fires on any promote.approved audit_log event for env != 'development' that lacks a matching promote.approval_requested in the prior 24h. This indicates the email-link approval gate was bypassed — either the token was forged, the gate-check was disabled, or a code path skipped the request step. The middleware stamps `bypass_detected = true` when it cannot find a matching pending request at approval time. Source: audit_log kind = 'promote.approved' emitted by api/internal/handlers/stack.go (PR #65 era).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'promote.approved' AND env != 'development' AND bypass_detected = true"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 60,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 60,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

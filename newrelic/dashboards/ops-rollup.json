@@ -1,0 +1,147 @@
+{
+  "name": "instant-api — ops rollup",
+  "description": "Single-pane ops view rolling up the 5 surface-specific dashboards (admin, promote, billing, lifecycle, deploy). Curated billboards + sparklines for the on-call rotation. For deep dives, jump into the dedicated dashboard for each surface. Source: same Log/Transaction/audit_log feeds as the underlying dashboards.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Rollup",
+      "description": "Top-level health for everything shipped this week",
+      "widgets": [
+        {
+          "title": "API error rate (1h)",
+          "layout": { "column": 1, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT percentage(count(*), WHERE error IS true) AS 'err %' FROM Transaction WHERE appName LIKE 'instant-api%' SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 0.5 },
+              { "alertSeverity": "CRITICAL", "value": 1.0 }
+            ]
+          }
+        },
+        {
+          "title": "admin.access events (24h)",
+          "layout": { "column": 4, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'admin.access' SINCE 24 hours ago COMPARE WITH 1 day ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Pending promote approvals",
+          "layout": { "column": 7, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT filter(uniqueCount(approval_token), WHERE kind = 'promote.approval_requested') - filter(uniqueCount(approval_token), WHERE kind IN ('promote.approved', 'promote.rejected')) AS 'pending' FROM Log WHERE service = 'api' AND kind IN ('promote.approval_requested', 'promote.approved', 'promote.rejected') SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Deploys in-flight (1h)",
+          "layout": { "column": 10, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT filter(uniqueCount(deploy_id), WHERE kind = 'deploy.created') - filter(uniqueCount(deploy_id), WHERE kind IN ('deploy.healthy', 'deploy.failed')) AS 'in-flight' FROM Log WHERE service = 'api' AND kind IN ('deploy.created', 'deploy.healthy', 'deploy.failed') SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Dunning funnel (7d)",
+          "layout": { "column": 1, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT filter(count(*), WHERE kind = 'payment.grace_started') AS 'started', filter(count(*), WHERE kind = 'payment.grace_reminder') AS 'reminder', filter(count(*), WHERE kind = 'payment.grace_recovered') AS 'recovered', filter(count(*), WHERE kind = 'payment.grace_terminated') AS 'terminated' FROM Log WHERE service = 'api' AND kind LIKE 'payment.grace_%' SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Deploy lifecycle (24h)",
+          "layout": { "column": 7, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind IN ('deploy.created', 'deploy.healthy', 'deploy.failed') FACET kind TIMESERIES AUTO SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Pricing → checkout conversion (7d)",
+          "layout": { "column": 1, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT (filter(count(*), WHERE name = 'POST /api/v1/billing/checkout') / filter(count(*), WHERE name = 'GET /pricing')) * 100 AS 'conv %' FROM Transaction WHERE appName LIKE 'instant-api%' AND name IN ('GET /pricing', 'POST /api/v1/billing/checkout') SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Paused resources (active)",
+          "layout": { "column": 5, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT filter(uniqueCount(resource_id), WHERE kind = 'resource.paused') - filter(uniqueCount(resource_id), WHERE kind = 'resource.resumed') AS 'paused' FROM Log WHERE service = 'api' AND kind IN ('resource.paused', 'resource.resumed') SINCE 30 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Median deploy time (s, 24h)",
+          "layout": { "column": 9, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT percentile(deploy_ready_seconds, 50) AS 'p50 s' FROM Log WHERE service = 'api' AND kind = 'deploy.healthy' AND deploy_ready_seconds IS NOT NULL SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 180 },
+              { "alertSeverity": "CRITICAL", "value": 300 }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

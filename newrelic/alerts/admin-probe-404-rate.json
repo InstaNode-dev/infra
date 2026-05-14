@@ -1,0 +1,38 @@
+{
+  "name": "instant-api — ADMIN_PATH_PREFIX 404 rate > 50/min (5m)",
+  "type": "NRQL",
+  "description": "WARN/CRITICAL on sustained 404 probes against ADMIN_PATH_PREFIX routes — brute-force admin-URL discovery signal. The admin prefix is intentionally non-default (config-only), so legitimate traffic produces near-zero 404s; sustained probes mean someone is scanning. Source: Transaction events where request.uri matches the admin prefix and httpResponseCode is 404.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT rate(count(*), 1 minute) FROM Transaction WHERE appName LIKE 'instant-api%' AND request.uri LIKE '/admin/%' AND httpResponseCode = '404'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 50,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 20,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
