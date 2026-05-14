@@ -1,0 +1,129 @@
+{
+  "name": "instant — customer-visible backup health",
+  "description": "Operator-facing board to answer 'did the customer's backup succeed?' in <30s. Per-team success rate, median duration, and the last 50 backup operations. Pulled when a pro/team customer pings support about a backup. Source: Log records with audit_kind IN ('backup.requested', 'backup.succeeded', 'backup.failed', 'restore.requested', 'restore.succeeded', 'restore.failed') emitted from api/internal/handlers/backup.go (W5-B-api). Each event carries backup_id, team_id, tier, duration_seconds, and bytes.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Backup health",
+      "description": "Per-team backup success + duration for support triage",
+      "widgets": [
+        {
+          "title": "Backup success rate (last 24h, all teams)",
+          "layout": { "column": 1, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT filter(count(*), WHERE audit_kind = 'backup.succeeded') / (filter(count(*), WHERE audit_kind = 'backup.succeeded') + filter(count(*), WHERE audit_kind = 'backup.failed')) * 100 AS 'success %' FROM Log WHERE service = 'api' AND audit_kind LIKE 'backup.%' AND audit_kind != 'backup.requested' SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 99 },
+              { "alertSeverity": "CRITICAL", "value": 95 }
+            ]
+          }
+        },
+        {
+          "title": "Median backup duration (seconds)",
+          "layout": { "column": 5, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT percentile(duration_seconds, 50) AS 'p50 s', percentile(duration_seconds, 95) AS 'p95 s' FROM Log WHERE service = 'api' AND audit_kind = 'backup.succeeded' AND duration_seconds IS NOT NULL SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Backups in last 24h (count)",
+          "layout": { "column": 9, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) AS 'requested', filter(count(*), WHERE audit_kind = 'backup.succeeded') AS 'succeeded', filter(count(*), WHERE audit_kind = 'backup.failed') AS 'failed' FROM Log WHERE service = 'api' AND audit_kind LIKE 'backup.%' SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Per-team success rate (last 7d)",
+          "layout": { "column": 1, "row": 4, "width": 8, "height": 4 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT filter(count(*), WHERE audit_kind = 'backup.succeeded') AS 'succeeded', filter(count(*), WHERE audit_kind = 'backup.failed') AS 'failed', percentile(duration_seconds, 50) AS 'p50 dur s', percentile(duration_seconds, 95) AS 'p95 dur s' FROM Log WHERE service = 'api' AND audit_kind LIKE 'backup.%' AND audit_kind != 'backup.requested' FACET team_id, tier SINCE 7 days ago LIMIT 50"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Backup failures by reason (7d)",
+          "layout": { "column": 9, "row": 4, "width": 4, "height": 4 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind = 'backup.failed' FACET fail_reason SINCE 7 days ago LIMIT 10"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Recent 50 backup ops (paste backup_id into support ticket)",
+          "layout": { "column": 1, "row": 8, "width": 12, "height": 4 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT timestamp, audit_kind, team_id, tier, backup_id, duration_seconds, bytes, fail_reason FROM Log WHERE service = 'api' AND audit_kind LIKE 'backup.%' SINCE 24 hours ago LIMIT 50"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Restore success rate (last 7d) — parity check",
+          "layout": { "column": 1, "row": 12, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT filter(count(*), WHERE audit_kind = 'restore.succeeded') / (filter(count(*), WHERE audit_kind = 'restore.succeeded') + filter(count(*), WHERE audit_kind = 'restore.failed')) * 100 AS 'restore success %' FROM Log WHERE service = 'api' AND audit_kind LIKE 'restore.%' AND audit_kind != 'restore.requested' TIMESERIES 1 hour SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Backup bytes by team (7d total)",
+          "layout": { "column": 7, "row": 12, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(bytes) AS 'bytes backed up' FROM Log WHERE service = 'api' AND audit_kind = 'backup.succeeded' FACET team_id, tier SINCE 7 days ago LIMIT 25"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — team.deletion_failed > 0 (1h) [manual reconcile]",
+  "type": "NRQL",
+  "description": "Page on any team.deletion_failed event in a rolling 1h window. A failed deletion means the tombstone job partially executed (some resources destroyed, some not) and a human needs to reconcile state before the customer files a support ticket. The audit kind is emitted by api/internal/handlers/team.go in the W7-D deletion flow when the tombstone worker hits a backend that refuses to drop a database/redis/mongo user.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind = 'team.deletion_failed'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

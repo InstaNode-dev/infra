@@ -93,28 +93,32 @@ assert_eq "exit code is 1" "1" "$code"
 assert_contains "stderr mentions NEW_RELIC_ACCOUNT_ID" "NEW_RELIC_ACCOUNT_ID" "$out"
 
 # ----------------------------------------------------------------------------
-echo "test: --dry-run with both env vars set prints all 21 names, no API calls"
+echo "test: --dry-run with both env vars set prints all 33 names, no API calls"
 # ----------------------------------------------------------------------------
 out=$(env -i PATH="$PATH" NEW_RELIC_API_KEY=fake NEW_RELIC_ACCOUNT_ID=1234567 \
   "$APPLY" --dry-run 2>&1)
 code=$?
 assert_eq "exit code is 0" "0" "$code"
 
-# All 5 original dashboard names (4 original + SLO rollup)
+# 5 base dashboard names (4 original + SLO rollup from W5-D)
 assert_contains "dry-run prints api-overview"           "instant-api — overview"          "$out"
 assert_contains "dry-run prints provisioning"           "instant-api — provisioning"      "$out"
 assert_contains "dry-run prints deploy"                 "instant-api — deploy"            "$out"
 assert_contains "dry-run prints worker dashboard"       "instant-worker — River jobs"     "$out"
 assert_contains "dry-run prints slo-rollup"             "instant-api — SLO rollup"        "$out"
 
-# 5 new dashboard names (nr-config-rollup PR)
+# 5 nr-config-rollup dashboard names (A1)
 assert_contains "dry-run prints admin-defense"          "admin defense-in-depth"          "$out"
 assert_contains "dry-run prints promote-approval"       "promote approval flow"           "$out"
 assert_contains "dry-run prints billing-dunning"        "billing dunning + pricing"       "$out"
 assert_contains "dry-run prints resource-lifecycle"     "resource pause/resume + deploy lifecycle" "$out"
 assert_contains "dry-run prints ops-rollup"             "ops rollup"                      "$out"
 
-# All 9 original alert names (5 base + 4 SLO)
+# 2 W10 follow-up dashboard names
+assert_contains "dry-run prints audit-feed-wave9"       "audit feed (W7/W8/W9 kinds)"     "$out"
+assert_contains "dry-run prints backup-health"          "customer-visible backup health"  "$out"
+
+# 5 base + 4 SLO alert names
 assert_contains "dry-run prints error-rate alert"       "error rate > 1%"                 "$out"
 assert_contains "dry-run prints p95-latency alert"      "p95 latency > 500ms"             "$out"
 assert_contains "dry-run prints nats-down alert"        "NATS connection failures"        "$out"
@@ -125,7 +129,7 @@ assert_contains "dry-run prints slo-deploy-new alert"   "SLO POST /deploy/new su
 assert_contains "dry-run prints slo-resources alert"    "SLO GET /api/v1/resources"       "$out"
 assert_contains "dry-run prints slo-5xx-spike alert"    "SLO any-endpoint 5xx spike"      "$out"
 
-# 7 new alert names (nr-config-rollup PR)
+# 7 nr-config-rollup alerts
 assert_contains "dry-run prints admin-allowlist-breach"  "admin.access from non-allowlist user" "$out"
 assert_contains "dry-run prints admin-probe-404-rate"    "ADMIN_PATH_PREFIX 404 rate"      "$out"
 assert_contains "dry-run prints promote-bypass"          "promote.approved without prior approval_requested" "$out"
@@ -134,13 +138,17 @@ assert_contains "dry-run prints paused-resource-stale"   "resource paused > 30d"
 assert_contains "dry-run prints deploy-failure-rate"     "deploy failure rate > 30%"       "$out"
 assert_contains "dry-run prints deploy-time-degraded"    "median deploy time > 5 min"      "$out"
 
+# 5 W10 follow-up alert names
+assert_contains "dry-run prints team-deletion alert"    "team.deletion_failed > 0"                     "$out"
+assert_contains "dry-run prints storage-iam alert"      "storage IAM user create failures"             "$out"
+assert_contains "dry-run prints decrypt-burst alert"    "connection_url.decrypted > 50/h"              "$out"
+assert_contains "dry-run prints deploy-by-team alert"   "deploy failure rate > 30% (1h) faceted"       "$out"
+assert_contains "dry-run prints backup-stuck alert"     "backup.requested with no follow-up"           "$out"
+
 # No real HTTP traffic — the [dry-run] tag must appear on every name
-# (10 dashboards + 16 alerts = 26). Bumped from 21 when this PR (W5-D)
-# added the SLO rollup dashboard + 4 SLO alerts (slo-db-new, slo-deploy-new,
-# slo-resources, slo-5xx-spike) on top of the nr-config-rollup baseline of
-# 9 dashboards + 12 alerts = 21.
+# 12 dashboards + 21 alerts = 33 total after W10 follow-up.
 dryrun_count=$(echo "$out" | grep -c '^\[dry-run\]' || true)
-assert_eq "every name prefixed with [dry-run] (26 total)" "26" "$dryrun_count"
+assert_eq "every name prefixed with [dry-run] (33 total)" "33" "$dryrun_count"
 
 # ----------------------------------------------------------------------------
 echo "test: --dry-run without env vars still validates JSON + warns"
@@ -150,7 +158,7 @@ code=$?
 assert_eq "exit code is 0 with no env (dry-run)" "0" "$code"
 assert_contains "warns about unset env" "warning" "$out"
 dryrun_count=$(echo "$out" | grep -c '^\[dry-run\]' || true)
-assert_eq "still prints 26 [dry-run] entries" "26" "$dryrun_count"
+assert_eq "still prints 33 [dry-run] entries" "33" "$dryrun_count"
 
 # ----------------------------------------------------------------------------
 echo "test: every JSON file in dashboards/ and alerts/ parses cleanly"
@@ -163,7 +171,11 @@ for f in "$NR_DIR"/dashboards/*.json "$NR_DIR"/alerts/*.json; do
   fi
 done
 if [ "$broken" -eq 0 ]; then
+<<<<<<< HEAD
   echo "  ok  all 26 JSON files parse"
+=======
+  echo "  ok  all 16 JSON files parse"
+>>>>>>> b41339a (newrelic: dashboards + alerts for W7/W8/W9 audit kinds (W10 follow-up))
   PASS=$((PASS+1))
 else
   FAIL=$((FAIL+1))

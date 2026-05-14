@@ -1,0 +1,37 @@
+{
+  "name": "instant-api — deploy failure rate > 30% (1h) faceted by team",
+  "type": "NRQL",
+  "description": "Extends the A1 deploy-failure alert by faceting on team_id. A1's policy fires on aggregate failure rate; this one fires when a single team's deploys are >30% failing over a rolling 1h — surfacing per-customer breakage (bad Dockerfile, ENV mismatch, Kaniko cache poison) that's invisible at the aggregate. Source: deploy.created vs deploy.failed audit events emitted by api/internal/handlers/deploy.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT filter(count(*), WHERE audit_kind = 'deploy.failed') / (filter(count(*), WHERE audit_kind = 'deploy.failed') + filter(count(*), WHERE audit_kind = 'deploy.healthy')) * 100 AS 'fail_pct' FROM Log WHERE service = 'api' AND audit_kind IN ('deploy.failed', 'deploy.healthy') FACET team_id"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 30,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 15,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
