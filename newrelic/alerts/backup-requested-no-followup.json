@@ -1,0 +1,38 @@
+{
+  "name": "instant-api — backup.requested with no follow-up within 30m [stuck backup]",
+  "type": "NRQL",
+  "description": "Warn when a backup.requested event has no matching backup.succeeded or backup.failed event for the same backup_id within 30 minutes. A stuck request usually means the worker that runs the actual snapshot crashed mid-flight — without this alert the customer first learns when they try to restore. Source: audit events emitted by api/internal/handlers/backup.go (W5-B-api); the join uses backup_id which is included on all three events.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind = 'backup.requested' AND backup_id NOT IN (SELECT uniques(backup_id) FROM Log WHERE service = 'api' AND audit_kind IN ('backup.succeeded', 'backup.failed') SINCE 35 minutes ago)"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 1800,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    },
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 3,
+      "thresholdDuration": 1800,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 300,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
