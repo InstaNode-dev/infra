@@ -1,0 +1,87 @@
+{
+  "name": "instant-api — billing dunning + pricing",
+  "description": "Payment dunning funnel (PR #66 era) plus pricing-page conversion. Source: audit_log records with kind IN ('payment.grace_started', 'payment.grace_reminder', 'payment.grace_recovered', 'payment.grace_terminated') emitted by api/internal/handlers/billing.go, plus Transaction events on /pricing and /api/v1/billing/checkout. Pairs with the grace-terminated-spike alert.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Dunning",
+      "description": "Payment recovery funnel + pricing conversion",
+      "widgets": [
+        {
+          "title": "Dunning funnel (7d counts)",
+          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT filter(count(*), WHERE kind = 'payment.grace_started') AS 'grace_started', filter(count(*), WHERE kind = 'payment.grace_reminder') AS 'grace_reminder', filter(count(*), WHERE kind = 'payment.grace_recovered') AS 'grace_recovered', filter(count(*), WHERE kind = 'payment.grace_terminated') AS 'grace_terminated' FROM Log WHERE service = 'api' AND kind LIKE 'payment.grace_%' SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Recovery rate (recovered / started, 7d)",
+          "layout": { "column": 7, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT (filter(count(*), WHERE kind = 'payment.grace_recovered') / filter(count(*), WHERE kind = 'payment.grace_started')) * 100 AS 'recovery %' FROM Log WHERE service = 'api' AND kind IN ('payment.grace_started', 'payment.grace_recovered') SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 60 },
+              { "alertSeverity": "CRITICAL", "value": 40 }
+            ]
+          }
+        },
+        {
+          "title": "grace_terminated timeseries (mass-failure signal)",
+          "layout": { "column": 10, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'payment.grace_terminated' TIMESERIES AUTO SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "/pricing loads vs /billing/checkout conversion (%)",
+          "layout": { "column": 1, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT filter(count(*), WHERE name = 'GET /pricing') AS 'pricing loads', filter(count(*), WHERE name = 'POST /api/v1/billing/checkout') AS 'checkout starts', (filter(count(*), WHERE name = 'POST /api/v1/billing/checkout') / filter(count(*), WHERE name = 'GET /pricing')) * 100 AS 'conversion %' FROM Transaction WHERE appName LIKE 'instant-api%' AND name IN ('GET /pricing', 'POST /api/v1/billing/checkout') TIMESERIES AUTO"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Checkout failure rate by error.code",
+          "layout": { "column": 7, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND message LIKE '%checkout%' AND level = 'ERROR' FACET `error.code` SINCE 7 days ago LIMIT 20"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        }
+      ]
+    }
+  ]
+}

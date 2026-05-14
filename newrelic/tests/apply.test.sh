@@ -93,31 +93,48 @@ assert_eq "exit code is 1" "1" "$code"
 assert_contains "stderr mentions NEW_RELIC_ACCOUNT_ID" "NEW_RELIC_ACCOUNT_ID" "$out"
 
 # ----------------------------------------------------------------------------
-echo "test: --dry-run with both env vars set prints all 9 names, no API calls"
+echo "test: --dry-run with both env vars set prints all 21 names, no API calls"
 # ----------------------------------------------------------------------------
 out=$(env -i PATH="$PATH" NEW_RELIC_API_KEY=fake NEW_RELIC_ACCOUNT_ID=1234567 \
   "$APPLY" --dry-run 2>&1)
 code=$?
 assert_eq "exit code is 0" "0" "$code"
 
-# All 4 dashboard names
+# All 4 original dashboard names
 assert_contains "dry-run prints api-overview"           "instant-api — overview"          "$out"
 assert_contains "dry-run prints provisioning"           "instant-api — provisioning"      "$out"
 assert_contains "dry-run prints deploy"                 "instant-api — deploy"            "$out"
 assert_contains "dry-run prints worker dashboard"       "instant-worker — River jobs"     "$out"
 
-# All 5 alert names
+# 5 new dashboard names (nr-config-rollup PR)
+assert_contains "dry-run prints admin-defense"          "admin defense-in-depth"          "$out"
+assert_contains "dry-run prints promote-approval"       "promote approval flow"           "$out"
+assert_contains "dry-run prints billing-dunning"        "billing dunning + pricing"       "$out"
+assert_contains "dry-run prints resource-lifecycle"     "resource pause/resume + deploy lifecycle" "$out"
+assert_contains "dry-run prints ops-rollup"             "ops rollup"                      "$out"
+
+# All 5 original alert names
 assert_contains "dry-run prints error-rate alert"       "error rate > 1%"                 "$out"
 assert_contains "dry-run prints p95-latency alert"      "p95 latency > 500ms"             "$out"
 assert_contains "dry-run prints nats-down alert"        "NATS connection failures"        "$out"
 assert_contains "dry-run prints worker-stalled alert"   "no jobs processed in 10m"        "$out"
 assert_contains "dry-run prints api-5xx-rate alert"     "5xx rate > 1%"                   "$out"
 
+# 7 new alert names (nr-config-rollup PR)
+assert_contains "dry-run prints admin-allowlist-breach"  "admin.access from non-allowlist user" "$out"
+assert_contains "dry-run prints admin-probe-404-rate"    "ADMIN_PATH_PREFIX 404 rate"      "$out"
+assert_contains "dry-run prints promote-bypass"          "promote.approved without prior approval_requested" "$out"
+assert_contains "dry-run prints grace-terminated-spike"  "payment.grace_terminated spike"  "$out"
+assert_contains "dry-run prints paused-resource-stale"   "resource paused > 30d"           "$out"
+assert_contains "dry-run prints deploy-failure-rate"     "deploy failure rate > 30%"       "$out"
+assert_contains "dry-run prints deploy-time-degraded"    "median deploy time > 5 min"      "$out"
+
 # No real HTTP traffic — the [dry-run] tag must appear on every name
-# (4 dashboards + 5 alerts = 9). Bumped from 8 when the api-5xx-rate-high
-# alert was added (PR adding alerts/api-5xx-rate-high.json).
+# (9 dashboards + 12 alerts = 21). Bumped from 9 when the nr-config-rollup
+# PR added 5 dashboards + 7 alerts; previously bumped from 8 when the
+# api-5xx-rate-high alert was added.
 dryrun_count=$(echo "$out" | grep -c '^\[dry-run\]' || true)
-assert_eq "every name prefixed with [dry-run] (9 total)" "9" "$dryrun_count"
+assert_eq "every name prefixed with [dry-run] (21 total)" "21" "$dryrun_count"
 
 # ----------------------------------------------------------------------------
 echo "test: --dry-run without env vars still validates JSON + warns"
@@ -127,7 +144,7 @@ code=$?
 assert_eq "exit code is 0 with no env (dry-run)" "0" "$code"
 assert_contains "warns about unset env" "warning" "$out"
 dryrun_count=$(echo "$out" | grep -c '^\[dry-run\]' || true)
-assert_eq "still prints 9 [dry-run] entries" "9" "$dryrun_count"
+assert_eq "still prints 21 [dry-run] entries" "21" "$dryrun_count"
 
 # ----------------------------------------------------------------------------
 echo "test: every JSON file in dashboards/ and alerts/ parses cleanly"
@@ -140,7 +157,7 @@ for f in "$NR_DIR"/dashboards/*.json "$NR_DIR"/alerts/*.json; do
   fi
 done
 if [ "$broken" -eq 0 ]; then
-  echo "  ok  all 9 JSON files parse"
+  echo "  ok  all 21 JSON files parse"
   PASS=$((PASS+1))
 else
   FAIL=$((FAIL+1))
