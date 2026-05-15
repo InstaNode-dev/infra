@@ -1,10 +1,10 @@
 {
   "name": "instant-api — admin.access from non-allowlist user",
   "type": "NRQL",
-  "description": "CRITICAL. Fires on any admin.access audit_log event from a user whose email is NOT in the configured ADMIN_EMAILS allowlist. This means the allowlist middleware failed open and an unauthorized user reached an admin handler. The query uses an `allowed = false` tag the middleware sets when it falls through the allowlist; if the middleware is correctly closed-by-default this tag is impossible to see in steady state. Source: audit_log kind = 'admin.access' emitted by the admin middleware (PR #66+).",
+  "description": "CRITICAL. Fires on any admin.access audit event where the ADMIN_EMAILS allowlist middleware rejected the caller (denied_by = 'allowlist_miss') — i.e. a user who is NOT on the allowlist reached an admin route and tripped the allowlist gate. Sustained hits mean someone with a real signed-in session is probing the admin surface. The audit middleware (api/internal/middleware/admin_audit.go) writes denied_by = 'allowlist_miss' into every admin.access event whose 403 came from the allowlist check (vs 'rate_limit' for the rate-limiter, '' for success). FIELD NOTE: this query was previously written against a non-existent `allowed = false` tag; the middleware emits `denied_by`, not `allowed`. FOLLOW-UP: to also catch a true fail-OPEN (non-allowlist user getting a 200, not a 403), the api should emit an explicit `is_allowlisted` boolean on every admin.access event — denied_by only covers the correctly-denied case. Source: audit_log kind = 'admin.access' emitted by the admin audit middleware (PR #66+).",
   "enabled": true,
   "nrql": {
-    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'admin.access' AND allowed = false"
+    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind = 'admin.access' AND denied_by = 'allowlist_miss'"
   },
   "terms": [
     {

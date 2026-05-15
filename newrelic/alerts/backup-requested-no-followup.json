@@ -1,10 +1,10 @@
 {
   "name": "instant-api — backup.requested with no follow-up within 30m [stuck backup]",
   "type": "NRQL",
-  "description": "Warn when a backup.requested event has no matching backup.succeeded or backup.failed event for the same backup_id within 30 minutes. A stuck request usually means the worker that runs the actual snapshot crashed mid-flight — without this alert the customer first learns when they try to restore. Source: audit events emitted by api/internal/handlers/backup.go (W5-B-api); the join uses backup_id which is included on all three events.",
+  "description": "Warn when backups are requested but not completing. NR alert conditions cannot run subqueries, so this cannot do a true per-backup_id A-without-B join. Instead it measures the rate gap inside each aggregation window: count(backup.requested) minus count(backup.succeeded + backup.failed). A sustained positive gap means requests are piling up faster than the worker finishes them — the same symptom a stuck backup produces (worker crashed mid-snapshot). The 30m aggregation window roughly matches the per-row 30m backup timeout in worker/internal/jobs/customer_backup_runner.go, so a single stuck backup surfaces within one window. KNOWN LIMITATION: this is population-level, not per-id — a healthy burst that straddles a window boundary can show a transient gap, hence the multi-occurrence terms. FOLLOW-UP (preferred fix): add a worker reconciler that emits a `backup.stuck` audit event when a resource_backups row sits in 'pending'/'running' past the 30m timeout; the alert then becomes a trivial `SELECT count(*) FROM Log WHERE audit_kind = 'backup.stuck'` with exact per-backup precision. Source: audit events from api/internal/handlers/backup.go (backup.requested) and worker/internal/jobs/backup_audit.go (backup.succeeded / backup.failed).",
   "enabled": true,
   "nrql": {
-    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind = 'backup.requested' AND backup_id NOT IN (SELECT uniques(backup_id) FROM Log WHERE service = 'api' AND audit_kind IN ('backup.succeeded', 'backup.failed') SINCE 35 minutes ago)"
+    "query": "SELECT filter(count(*), WHERE audit_kind = 'backup.requested') - filter(count(*), WHERE audit_kind IN ('backup.succeeded', 'backup.failed')) AS uncompleted_backups FROM Log WHERE service = 'api' AND audit_kind IN ('backup.requested', 'backup.succeeded', 'backup.failed')"
   },
   "terms": [
     {
@@ -12,18 +12,18 @@
       "operator": "ABOVE",
       "threshold": 0,
       "thresholdDuration": 1800,
-      "thresholdOccurrences": "AT_LEAST_ONCE"
+      "thresholdOccurrences": "ALL"
     },
     {
       "priority": "CRITICAL",
       "operator": "ABOVE",
       "threshold": 3,
       "thresholdDuration": 1800,
-      "thresholdOccurrences": "AT_LEAST_ONCE"
+      "thresholdOccurrences": "ALL"
     }
   ],
   "signal": {
-    "aggregationWindow": 300,
+    "aggregationWindow": 1800,
     "aggregationMethod": "EVENT_FLOW",
     "aggregationDelay": 300,
     "fillOption": "STATIC",
