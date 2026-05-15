@@ -4,6 +4,50 @@ Append-only log of dashboard and alert changes shipped from this repo. Pair ever
 entry with the audit-kind emit sites or metric exporters it depends on — the
 dashboard/alert is dead unless the upstream service is also shipped.
 
+## Alert NRQL + apply.sh idempotency fix (2026-05-15)
+
+Four alerts were failing to apply. Root cause was two separate bugs:
+
+1. `apply.sh` Update path was broken. `alertsNrqlConditionStaticUpdate`
+   returns an opaque NerdGraph `SERVER_ERROR` for every condition on this
+   account — even a no-op update with valid full input. On any second run
+   (when conditions already exist) ALL 21 alerts failed. `apply_alert` now
+   uses DELETE-then-CREATE instead of UPDATE: it deletes the existing
+   condition by name (`alertsConditionDelete`, which works reliably) then
+   recreates it (`alertsNrqlConditionStaticCreate`, also reliable). apply.sh
+   is idempotent again and prints `(recreated)` for replaced conditions.
+
+2. `backup-requested-no-followup.json` used a genuine subquery
+   (`backup_id NOT IN (SELECT uniques(backup_id) FROM ...)`). NR alert
+   conditions cannot run nested SELECTs (`DaqsValidationError`). Rewritten
+   as a single-SELECT rate-gap: `filter(count(*), requested) -
+   filter(count(*), succeeded|failed)` over a 30m aggregation window with
+   `thresholdOccurrences: ALL` so a burst straddling a window boundary does
+   not false-fire. This is population-level, not per-backup_id.
+   FOLLOW-UP (preferred): add a worker reconciler that emits a
+   `backup.stuck` audit event when a `resource_backups` row sits in
+   `pending`/`running` past the 30m timeout in
+   `worker/internal/jobs/customer_backup_runner.go`; the alert then becomes
+   `SELECT count(*) FROM Log WHERE audit_kind = 'backup.stuck'` with exact
+   per-backup precision. No `backup.stuck` audit kind exists today.
+
+3. `admin-allowlist-breach.json` queried a non-existent `allowed = false`
+   field. The audit middleware (`api/internal/middleware/admin_audit.go`)
+   emits `denied_by` (`'allowlist_miss'` / `'rate_limit'` / `''`), not
+   `allowed`. Also switched `kind` -> `audit_kind` to match the other
+   audit-event alerts in this repo. Query is now
+   `audit_kind = 'admin.access' AND denied_by = 'allowlist_miss'`.
+   FOLLOW-UP: `denied_by` only catches the correctly-DENIED case. To also
+   catch a true fail-OPEN (non-allowlist user getting a 200), the api
+   should emit an explicit `is_allowlisted` boolean on every admin.access
+   audit event.
+
+`api-5xx-rate-high.json` and `admin-probe-404-rate.json` were already
+subquery-free (`percentage()` and `rate()` respectively) — they only
+appeared to fail because of bug #1. No NRQL change needed for those two.
+
+All 21 alerts now apply cleanly (`apply.sh` exits 0, zero failures).
+
 ## W10 follow-up (2026-05-14)
 
 PR: `feat/w10-nr-observability-followup-fresh`.

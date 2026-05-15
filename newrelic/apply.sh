@@ -312,47 +312,56 @@ apply_alert() {
   local body
   body=$(jq 'del(.type)' "$file")
 
+  # Idempotency strategy: DELETE-then-CREATE, not UPDATE.
+  #
+  # NerdGraph's alertsNrqlConditionStaticUpdate mutation returns an opaque
+  # SERVER_ERROR on this account for every condition — even a no-op update
+  # with valid full input. The Create and alertsConditionDelete mutations
+  # both work reliably, so we delete any existing condition by the same
+  # name first, then create fresh. This keeps apply.sh idempotent on
+  # repeated runs without depending on the broken Update path.
   local existing
   existing=$(find_condition_id "$policy_id" "$name" || true)
 
   if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-    local mutation='mutation($accountId: Int!, $id: ID!, $condition: NrqlConditionUpdateInput!) {
-      alertsNrqlConditionStaticUpdate(accountId: $accountId, id: $id, condition: $condition) {
-        id name
-      }
+    local del_mutation='mutation($accountId: Int!, $id: ID!) {
+      alertsConditionDelete(accountId: $accountId, id: $id) { id }
     }'
-    local vars
-    vars=$(jq -n --argjson a "$NEW_RELIC_ACCOUNT_ID" --arg id "$existing" --argjson c "$body" \
-      '{accountId: $a, id: $id, condition: $c}')
-    # nerdgraph returns non-zero on a GraphQL errors[] array. The `|| true`
-    # keeps this function alive so the caller's failure list captures it
-    # (an aborted function would kill the whole alert loop).
-    local resp
-    resp=$(nerdgraph "$mutation" "$vars") || true
-    local id
-    id=$(echo "$resp" | jq -r '.data.alertsNrqlConditionStaticUpdate.id // empty')
-    if [ -z "$id" ]; then
-      echo "x $name — update failed (see nerdgraph error above)" >&2
+    local del_vars
+    del_vars=$(jq -n --argjson a "$NEW_RELIC_ACCOUNT_ID" --arg id "$existing" \
+      '{accountId: $a, id: $id}')
+    local del_resp
+    del_resp=$(nerdgraph "$del_mutation" "$del_vars") || true
+    local del_id
+    del_id=$(echo "$del_resp" | jq -r '.data.alertsConditionDelete.id // empty')
+    if [ -z "$del_id" ]; then
+      echo "x $name — delete-before-recreate failed (see nerdgraph error above)" >&2
       return 1
     fi
-    echo "+ $name (updated)  https://one.newrelic.com/alerts-ai/condition-builder/static-condition/${id}"
+  fi
+
+  local mutation='mutation($accountId: Int!, $policyId: ID!, $condition: NrqlConditionStaticInput!) {
+    alertsNrqlConditionStaticCreate(accountId: $accountId, policyId: $policyId, condition: $condition) {
+      id name
+    }
+  }'
+  local vars
+  vars=$(jq -n --argjson a "$NEW_RELIC_ACCOUNT_ID" --arg p "$policy_id" --argjson c "$body" \
+    '{accountId: $a, policyId: $p, condition: $c}')
+  # nerdgraph returns non-zero on a GraphQL errors[] array. The `|| true`
+  # keeps this function alive so the caller's failure list captures it
+  # (an aborted function would kill the whole alert loop).
+  local resp
+  resp=$(nerdgraph "$mutation" "$vars") || true
+  local id
+  id=$(echo "$resp" | jq -r '.data.alertsNrqlConditionStaticCreate.id // empty')
+  if [ -z "$id" ]; then
+    echo "x $name — create failed (see nerdgraph error above)" >&2
+    return 1
+  fi
+  if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+    echo "+ $name (recreated)  https://one.newrelic.com/alerts-ai/condition-builder/static-condition/${id}"
   else
-    local mutation='mutation($accountId: Int!, $policyId: ID!, $condition: NrqlConditionStaticInput!) {
-      alertsNrqlConditionStaticCreate(accountId: $accountId, policyId: $policyId, condition: $condition) {
-        id name
-      }
-    }'
-    local vars
-    vars=$(jq -n --argjson a "$NEW_RELIC_ACCOUNT_ID" --arg p "$policy_id" --argjson c "$body" \
-      '{accountId: $a, policyId: $p, condition: $c}')
-    local resp
-    resp=$(nerdgraph "$mutation" "$vars") || true
-    local id
-    id=$(echo "$resp" | jq -r '.data.alertsNrqlConditionStaticCreate.id // empty')
-    if [ -z "$id" ]; then
-      echo "x $name — create failed (see nerdgraph error above)" >&2
-      return 1
-    fi
     echo "+ $name (created)  https://one.newrelic.com/alerts-ai/condition-builder/static-condition/${id}"
   fi
 }
