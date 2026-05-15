@@ -169,10 +169,13 @@ apply_dashboard() {
 
   if [ -n "$existing" ] && [ "$existing" != "null" ]; then
     # Update
+    # NerdGraph's DashboardEntityResult exposes guid but NOT permalink
+    # (the field was removed from the schema). Build the redirect URL
+    # from the guid instead.
     local mutation='mutation($guid: EntityGuid!, $dashboard: DashboardInput!) {
       dashboardUpdate(guid: $guid, dashboard: $dashboard) {
         errors { description type }
-        entityResult { guid permalink }
+        entityResult { guid }
       }
     }'
     local vars
@@ -186,15 +189,15 @@ apply_dashboard() {
       echo "$resp" | jq '.data.dashboardUpdate.errors' >&2
       return 1
     fi
-    local url
-    url=$(echo "$resp" | jq -r '.data.dashboardUpdate.entityResult.permalink')
-    echo "+ $name (updated)  $url"
+    local guid
+    guid=$(echo "$resp" | jq -r '.data.dashboardUpdate.entityResult.guid')
+    echo "+ $name (updated)  https://one.newrelic.com/redirect/entity/${guid}"
   else
     # Create
     local mutation='mutation($accountId: Int!, $dashboard: DashboardInput!) {
       dashboardCreate(accountId: $accountId, dashboard: $dashboard) {
         errors { description type }
-        entityResult { guid permalink }
+        entityResult { guid }
       }
     }'
     local vars
@@ -209,9 +212,9 @@ apply_dashboard() {
       echo "$resp" | jq '.data.dashboardCreate.errors' >&2
       return 1
     fi
-    local url
-    url=$(echo "$resp" | jq -r '.data.dashboardCreate.entityResult.permalink')
-    echo "+ $name (created)  $url"
+    local guid
+    guid=$(echo "$resp" | jq -r '.data.dashboardCreate.entityResult.guid')
+    echo "+ $name (created)  https://one.newrelic.com/redirect/entity/${guid}"
   fi
 }
 
@@ -321,10 +324,17 @@ apply_alert() {
     local vars
     vars=$(jq -n --argjson a "$NEW_RELIC_ACCOUNT_ID" --arg id "$existing" --argjson c "$body" \
       '{accountId: $a, id: $id, condition: $c}')
+    # nerdgraph returns non-zero on a GraphQL errors[] array. The `|| true`
+    # keeps this function alive so the caller's failure list captures it
+    # (an aborted function would kill the whole alert loop).
     local resp
-    resp=$(nerdgraph "$mutation" "$vars")
+    resp=$(nerdgraph "$mutation" "$vars") || true
     local id
-    id=$(echo "$resp" | jq -r '.data.alertsNrqlConditionStaticUpdate.id')
+    id=$(echo "$resp" | jq -r '.data.alertsNrqlConditionStaticUpdate.id // empty')
+    if [ -z "$id" ]; then
+      echo "x $name — update failed (see nerdgraph error above)" >&2
+      return 1
+    fi
     echo "+ $name (updated)  https://one.newrelic.com/alerts-ai/condition-builder/static-condition/${id}"
   else
     local mutation='mutation($accountId: Int!, $policyId: ID!, $condition: NrqlConditionStaticInput!) {
@@ -336,9 +346,13 @@ apply_alert() {
     vars=$(jq -n --argjson a "$NEW_RELIC_ACCOUNT_ID" --arg p "$policy_id" --argjson c "$body" \
       '{accountId: $a, policyId: $p, condition: $c}')
     local resp
-    resp=$(nerdgraph "$mutation" "$vars")
+    resp=$(nerdgraph "$mutation" "$vars") || true
     local id
-    id=$(echo "$resp" | jq -r '.data.alertsNrqlConditionStaticCreate.id')
+    id=$(echo "$resp" | jq -r '.data.alertsNrqlConditionStaticCreate.id // empty')
+    if [ -z "$id" ]; then
+      echo "x $name — create failed (see nerdgraph error above)" >&2
+      return 1
+    fi
     echo "+ $name (created)  https://one.newrelic.com/alerts-ai/condition-builder/static-condition/${id}"
   fi
 }
@@ -367,10 +381,24 @@ POLICY_ID=$(ensure_policy)
 if [ "$DRY_RUN" -eq 0 ]; then
   echo "    policy id: $POLICY_ID"
 fi
+# Resilient apply: one bad alert (e.g. NRQL the alert engine rejects —
+# subqueries are not permitted in alert conditions) must not abort the
+# remaining ~20. Collect failures, report at the end, exit non-zero so
+# CI still notices, but every applicable alert lands.
+ALERT_FAILURES=()
 for f in "$ALERTS_DIR"/*.json; do
   [ -f "$f" ] || continue
-  apply_alert "$f" "$POLICY_ID"
+  if ! apply_alert "$f" "$POLICY_ID"; then
+    ALERT_FAILURES+=("$(basename "$f")")
+  fi
 done
 
 echo
+if [ "${#ALERT_FAILURES[@]}" -gt 0 ]; then
+  echo "==> Done with ${#ALERT_FAILURES[@]} alert failure(s):"
+  for fail in "${ALERT_FAILURES[@]}"; do
+    echo "    x $fail"
+  done
+  exit 1
+fi
 echo "==> Done."
