@@ -1,0 +1,153 @@
+---
+# infra — gated apply of k8s manifests to the prod cluster.
+#
+# APPROVAL MODEL: this workflow is `workflow_dispatch` ONLY — it never runs
+# on push. Applying to prod requires a human to deliberately open the
+# Actions tab, pick this workflow, and click "Run workflow", then type the
+# confirm phrase. That deliberate manual trigger IS the approval gate.
+# (GitHub's native Environment "required reviewers" gate needs a paid plan
+# the org is not on — `workflow_dispatch` is the free-plan equivalent and
+# matches the existing pin-prod-images.yml pattern.)
+#
+# SAFETY SCOPING — the apply DELIBERATELY excludes:
+#   * secret manifests (secrets.yaml, infra-secrets.yaml, data/*secret*,
+#     backups/instant-data-spaces-creds.yaml) — they carry CHANGE_ME
+#     placeholders; applying them would clobber the live prod secrets.
+#   * the 3 service Deployments (app.yaml, worker/deployment.yaml,
+#     provisioner/deployment.yaml) — they hardcode `:local` image tags and
+#     are owned by the api/worker/provisioner auto-deploy pipelines via
+#     `kubectl set image`. Applying them would revert prod to a dead image.
+#   * *-ha/values.yaml — Helm chart inputs, not k8s objects.
+# It runs `kubectl diff` first and prints it so the operator sees exactly
+# what will change before the apply step runs.
+#
+# Required repo secret: KUBECONFIG_B64 — base64 of a kubeconfig with apply
+# rights on the prod cluster (the same one the api repo uses; grab a fresh
+# static-token kubeconfig from the DigitalOcean control panel — the local
+# doctl-exec kubeconfig cannot be embedded).
+
+name: apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type APPLY to confirm applying infra/k8s to PROD.'
+        required: true
+        type: string
+
+env:
+  K8S_DIR: k8s
+
+jobs:
+  validate:
+    name: Lint + schema-check before apply
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: yamllint
+        run: |
+          python3 -m pip install --quiet yamllint
+          cat > /tmp/yamllint.yml <<'YML'
+          extends: relaxed
+          rules:
+            line-length: disable
+            comments: disable
+            comments-indentation: disable
+            document-start: disable
+            truthy: disable
+            empty-lines: disable
+            trailing-spaces: disable
+            indentation: disable
+          YML
+          yamllint -c /tmp/yamllint.yml "${K8S_DIR}/"
+      - name: kubeconform
+        run: |
+          VER=v0.6.7
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${VER}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+          mapfile -t FILES < <(find "${K8S_DIR}" -type f \( -name '*.yaml' -o -name '*.yml' \) \
+            ! -path '*-ha/values.yaml' | sort)
+          kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.31.0 -summary "${FILES[@]}"
+
+  apply:
+    name: Diff + apply to prod (manual gate)
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm the APPLY phrase
+        run: |
+          if [ "${{ inputs.confirm }}" != "APPLY" ]; then
+            echo "::error::confirm input was '${{ inputs.confirm }}', expected 'APPLY'. Aborting."
+            exit 1
+          fi
+          echo "confirm phrase OK — proceeding."
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'latest'
+
+      - name: Configure kubeconfig from KUBECONFIG_B64
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+        run: |
+          if [ -z "${KUBECONFIG_B64}" ]; then
+            echo "::error::KUBECONFIG_B64 repo secret is not set on the infra repo."
+            echo "Add it: a base64-encoded static-token kubeconfig for the prod cluster"
+            echo "(the same value the api repo uses). Settings → Secrets → Actions."
+            exit 1
+          fi
+          mkdir -p "$HOME/.kube"
+          echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+          kubectl config current-context
+
+      - name: Build the apply file list (scoped — excludes secrets + service Deployments)
+        id: files
+        run: |
+          # Exclusions — see the header comment for the rationale.
+          EXCLUDE=(
+            "${K8S_DIR}/secrets.yaml"
+            "${K8S_DIR}/infra-secrets.yaml"
+            "${K8S_DIR}/data/minio-secret.yaml"
+            "${K8S_DIR}/data/redis-provision-ha/secret.yaml"
+            "${K8S_DIR}/backups/instant-data-spaces-creds.yaml"
+            "${K8S_DIR}/app.yaml"
+            "${K8S_DIR}/worker/deployment.yaml"
+            "${K8S_DIR}/provisioner/deployment.yaml"
+          )
+          KEEP=()
+          while IFS= read -r f; do
+            skip=false
+            for e in "${EXCLUDE[@]}"; do [ "$f" = "$e" ] && skip=true && break; done
+            $skip || KEEP+=("$f")
+          done < <(find "${K8S_DIR}" -type f \( -name '*.yaml' -o -name '*.yml' \) \
+                     ! -path '*-ha/values.yaml' | sort)
+          echo "Will apply ${#KEEP[@]} manifest(s); excluded ${#EXCLUDE[@]} (secrets + service Deployments)."
+          printf '%s\n' "${KEEP[@]}" > /tmp/apply-files.txt
+          printf '  apply: %s\n' "${KEEP[@]}"
+          printf '  EXCLUDED: %s\n' "${EXCLUDE[@]}"
+
+      - name: kubectl diff (preview — what will change)
+        run: |
+          # diff exit code 1 just means "differences exist" — not an error.
+          while IFS= read -r f; do
+            echo "──── diff: $f ────"
+            kubectl diff -f "$f" || true
+          done < /tmp/apply-files.txt
+
+      - name: kubectl apply (scoped)
+        run: |
+          rc=0
+          while IFS= read -r f; do
+            echo "──── apply: $f ────"
+            kubectl apply -f "$f" || rc=$?
+          done < /tmp/apply-files.txt
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::one or more manifests failed to apply (exit $rc)"
+            exit "$rc"
+          fi
+          echo "all scoped manifests applied."
