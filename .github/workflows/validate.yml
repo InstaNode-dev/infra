@@ -1,0 +1,84 @@
+---
+# infra — manifest validation gate.
+#
+# Runs on every push and PR that touches k8s manifests. Catches broken
+# YAML and invalid Kubernetes object schemas BEFORE anyone `kubectl apply`s
+# them by hand — today a typo only surfaces at apply time against prod.
+#
+# This workflow deliberately does NOT `kubectl apply`. Auto-apply of this
+# repo to prod is unsafe in its current state:
+#   * k8s/secrets.yaml / infra-secrets.yaml / data/*secret*.yaml carry
+#     CHANGE_ME placeholders — applying them would clobber the live prod
+#     secrets and take the whole platform down.
+#   * k8s/app.yaml, worker/deployment.yaml, provisioner/deployment.yaml
+#     hardcode `:local` image tags — applying them would revert all three
+#     services to a non-existent image and undo their own auto-deploys.
+# A real auto-apply needs: (1) secrets moved out of git (sealed-secrets /
+# external-secrets), (2) image tags parameterised or those Deployments
+# owned solely by the service pipelines, (3) the manifests reconciled to
+# the actual live cluster state so apply is a no-op on a clean tree.
+# Until then, apply stays a deliberate manual step. See CLAUDE.md rule 15.
+
+name: validate
+
+on:
+  push:
+    branches: [master]
+    paths: ['k8s/**', '.github/workflows/validate.yml']
+  pull_request:
+    paths: ['k8s/**', '.github/workflows/validate.yml']
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Lint + schema-check k8s manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: yamllint
+        run: |
+          python3 -m pip install --quiet yamllint
+          # Relaxed: k8s manifests routinely have long lines and varied
+          # indent; we care about genuine syntax errors, not style.
+          cat > /tmp/yamllint.yml <<'YML'
+          extends: relaxed
+          rules:
+            line-length: disable
+            comments: disable
+            comments-indentation: disable
+            document-start: disable
+            truthy: disable
+            empty-lines: disable
+            trailing-spaces: disable
+            indentation: disable
+          YML
+          yamllint -c /tmp/yamllint.yml k8s/
+
+      - name: Install kubeconform
+        run: |
+          VER=v0.6.7
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${VER}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: kubeconform schema validation
+        run: |
+          set -euo pipefail
+          # Exclude Helm values files (k8s/data/*-ha/values.yaml) — those
+          # are Helm chart inputs, not Kubernetes objects, so they have no
+          # k8s schema to check against.
+          # -ignore-missing-schemas: CRDs (cert-manager, Cilium, CNPG)
+          #   have no built-in schema; skip them rather than fail.
+          # -strict: reject unknown/duplicate fields in core objects.
+          mapfile -t FILES < <(find k8s -type f \( -name '*.yaml' -o -name '*.yml' \) \
+            ! -path '*-ha/values.yaml' | sort)
+          echo "validating ${#FILES[@]} manifest(s):"
+          printf '  %s\n' "${FILES[@]}"
+          kubeconform \
+            -strict \
+            -ignore-missing-schemas \
+            -kubernetes-version 1.31.0 \
+            -summary \
+            "${FILES[@]}"
