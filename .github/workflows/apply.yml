@@ -67,7 +67,7 @@ jobs:
           curl -sSL "https://github.com/yannh/kubeconform/releases/download/${VER}/kubeconform-linux-amd64.tar.gz" \
             | tar -xz -C /usr/local/bin kubeconform
           mapfile -t FILES < <(find "${K8S_DIR}" -type f \( -name '*.yaml' -o -name '*.yml' \) \
-            ! -path '*-ha/values.yaml' | sort)
+            ! -name 'values.yaml' ! -name 'helm-values.yaml' | sort)
           kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.31.0 -summary "${FILES[@]}"
 
   apply:
@@ -125,7 +125,7 @@ jobs:
             for e in "${EXCLUDE[@]}"; do [ "$f" = "$e" ] && skip=true && break; done
             $skip || KEEP+=("$f")
           done < <(find "${K8S_DIR}" -type f \( -name '*.yaml' -o -name '*.yml' \) \
-                     ! -path '*-ha/values.yaml' | sort)
+                     ! -name 'values.yaml' ! -name 'helm-values.yaml' | sort)
           echo "Will apply ${#KEEP[@]} manifest(s); excluded ${#EXCLUDE[@]} (secrets + service Deployments)."
           printf '%s\n' "${KEEP[@]}" > /tmp/apply-files.txt
           printf '  apply: %s\n' "${KEEP[@]}"
