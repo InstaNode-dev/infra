@@ -57,6 +57,16 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
 
+  # Pod exec: required for Regrade's exec-based fallback on legacy Redis pods that
+  # lack a redis-auth Secret. The provisioner execs redis-cli into the running pod
+  # to issue CONFIG SET maxmemory / maxmemory-policy / CONFIG REWRITE.
+  # The password is referenced as $REDIS_PASSWORD inside the pod's own shell env —
+  # it never appears in argv or k8s audit logs. Scope: customer namespaces only
+  # (enforce via OPA/Kyverno: namespaces must start with "instant-customer-").
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+
   # Services: NodePort for external access + ClusterIP for internal init SQL
   - apiGroups: [""]
     resources: ["services"]
