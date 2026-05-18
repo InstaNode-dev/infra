@@ -1,10 +1,10 @@
 {
   "name": "instant-api — storage IAM user create failures > 0 (5m) [signup-blocking]",
   "type": "NRQL",
-  "description": "Page when any storage IAM user creation fails. Storage IAM provisioning happens in the /storage/new hot path (W9-C1); a failure here means a new paying customer cannot get a usable storage bucket and the signup-to-first-byte path is broken. Source: the instant_storage_iam_users_failed_total Prometheus counter scraped into Metric, labelled by op (create | delete). The metric is exported by api/internal/handlers/storage.go.",
+  "description": "Page when any storage IAM user creation fails. Storage IAM provisioning happens in the /storage/new hot path (W9-C1); a failure here means a new paying customer cannot get a usable storage bucket and the signup-to-first-byte path is broken. Source: the instant_storage_iam_users_failed_total Prometheus counter exported by api/internal/handlers/storage.go on the api /metrics endpoint, labelled by op (create | delete). FIELD NOTE (2026-05-18, BugBash P1-W3-05): this query previously referenced the timeslice metric 'Custom/Storage/IamUsersFailed/create', which has zero emitters — no RecordCustomMetric call exists in the code. It is now repointed at the real Prometheus counter. THIS REQUIRES the New Relic Prometheus OpenMetrics integration (or nri-prometheus) to be scraping the api /metrics endpoint so the counter lands in NRDB as a dimensional Metric; if that integration is not configured this NR alert will not fire and the guaranteed-working equivalent is the 'StorageIamCreateFailures' rule in infra/k8s/prometheus-rules.yaml (instant-api group), which evaluates the same counter directly in Prometheus.",
   "enabled": true,
   "nrql": {
-    "query": "SELECT sum(newrelic.timeslice.value) FROM Metric WHERE metricTimesliceName = 'Custom/Storage/IamUsersFailed/create'"
+    "query": "SELECT sum(instant_storage_iam_users_failed_total) FROM Metric WHERE op = 'create'"
   },
   "terms": [
     {

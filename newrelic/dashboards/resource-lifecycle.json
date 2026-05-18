@@ -1,6 +1,6 @@
 {
   "name": "instant-api — resource pause/resume + deploy lifecycle",
-  "description": "Resource pause/resume (migration 027) and deploy lifecycle events. Sources: audit_log records with kind IN ('resource.paused', 'resource.resumed', 'deploy.created', 'deploy.healthy', 'deploy.failed') and the existing `deploy_status` Log fields. Pairs with paused-resource-stale, deploy-failure-rate, and deploy-time-degraded alerts.",
+  "description": "Resource pause/resume (migration 027) and deploy lifecycle events. Sources: audit_log records with audit_kind IN ('resource.paused', 'resource.resumed', 'deploy.created', 'deploy.healthy', 'deploy.failed') and the existing `deploy_status` Log fields. Pairs with paused-resource-stale, deploy-failure-rate, and deploy-time-degraded alerts.",
   "permissions": "PUBLIC_READ_WRITE",
   "pages": [
     {
@@ -15,7 +15,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT filter(uniqueCount(resource_id), WHERE kind = 'resource.paused') - filter(uniqueCount(resource_id), WHERE kind = 'resource.resumed') AS 'paused active' FROM Log WHERE service = 'api' AND kind IN ('resource.paused', 'resource.resumed') TIMESERIES 1 hour SINCE 30 days ago"
+                "query": "SELECT filter(uniqueCount(resource_id), WHERE audit_kind = 'resource.paused') - filter(uniqueCount(resource_id), WHERE audit_kind = 'resource.resumed') AS 'paused active' FROM Log WHERE service = 'api' AND audit_kind IN ('resource.paused', 'resource.resumed') TIMESERIES 1 hour SINCE 30 days ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -29,7 +29,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind IN ('resource.paused', 'resource.resumed') FACET resource_type, kind SINCE 7 days ago LIMIT 30"
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind IN ('resource.paused', 'resource.resumed') FACET resource_type, audit_kind SINCE 7 days ago LIMIT 30"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -43,7 +43,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT (filter(uniqueCount(deploy_id), WHERE kind = 'deploy.healthy') / filter(uniqueCount(deploy_id), WHERE kind = 'deploy.created')) * 100 AS 'success %' FROM Log WHERE service = 'api' AND kind IN ('deploy.created', 'deploy.healthy') SINCE 24 hours ago"
+                "query": "SELECT (filter(uniqueCount(deploy_id), WHERE audit_kind = 'deploy.healthy') / filter(uniqueCount(deploy_id), WHERE audit_kind = 'deploy.created')) * 100 AS 'success %' FROM Log WHERE service = 'api' AND audit_kind IN ('deploy.created', 'deploy.healthy') SINCE 24 hours ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false },
@@ -61,7 +61,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT percentile(deploy_ready_seconds, 50) AS 'p50 s', percentile(deploy_ready_seconds, 95) AS 'p95 s' FROM Log WHERE service = 'api' AND kind = 'deploy.healthy' AND deploy_ready_seconds IS NOT NULL TIMESERIES AUTO SINCE 7 days ago"
+                "query": "SELECT percentile(time_to_healthy_seconds, 50) AS 'p50 s', percentile(time_to_healthy_seconds, 95) AS 'p95 s' FROM Log WHERE service = 'api' AND audit_kind = 'deploy.healthy' AND time_to_healthy_seconds IS NOT NULL TIMESERIES AUTO SINCE 7 days ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -75,7 +75,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind IN ('deploy.created', 'deploy.healthy', 'deploy.failed') FACET kind TIMESERIES AUTO SINCE 24 hours ago"
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind IN ('deploy.created', 'deploy.healthy', 'deploy.failed') FACET audit_kind TIMESERIES AUTO SINCE 24 hours ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }

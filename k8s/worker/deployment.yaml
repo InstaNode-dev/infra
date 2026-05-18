@@ -22,6 +22,15 @@ spec:
     metadata:
       labels:
         app: instant-worker
+      annotations:
+        # Prometheus pod-annotation discovery (P1-W5-08). The worker serves
+        # /metrics on port 8091 — the same port as /healthz. These let an
+        # annotation-based Prometheus discovery scrape the pod directly; the
+        # in-cluster instant-worker Service below is the static_configs path
+        # used by infra/prometheus/prometheus.yml.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8091"
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: instant-worker
       # Multi-worker is safe — River queue uses Postgres SELECT FOR UPDATE
@@ -40,8 +49,11 @@ spec:
           image: instant-worker:local
           imagePullPolicy: Never
           ports:
+            # 8091 serves both /healthz (probes) and /metrics (Prometheus
+            # scrape). Named 'metrics' so the instant-worker Service below
+            # can reference it by name.
             - containerPort: 8091
-              name: liveness
+              name: metrics
           # Probes (2026-05-18): the worker binary registers ONLY /healthz
           # (plus /metrics) — it never serves /livez. All three probes hit
           # /healthz. /healthz checks River queue connectivity + DB pool
@@ -149,3 +161,31 @@ spec:
               value: "noreply@instanode.dev"
             - name: BREVO_SENDER_NAME
               value: "instanode"
+---
+# Headless ClusterIP Service for the worker (P1-W5-08 / T13-S5-05). The worker
+# is a background-job processor with no inbound API traffic, but it serves
+# /healthz + /metrics on 8091. This Service exists solely so Prometheus can
+# resolve instant-worker.instant-infra.svc.cluster.local:8091 — the target of
+# the 'instant-worker' scrape job in infra/prometheus/prometheus.yml, which
+# feeds the AnonymousResourceExpiryStopped + StorageIamCreateFailures alerts.
+apiVersion: v1
+kind: Service
+metadata:
+  name: instant-worker
+  namespace: instant-infra
+  labels:
+    app: instant-worker
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8091"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: instant-worker
+  ports:
+    - name: metrics
+      port: 8091
+      targetPort: metrics
+      protocol: TCP

@@ -1,6 +1,6 @@
 {
   "name": "instant-api — billing dunning + pricing",
-  "description": "Payment dunning funnel (PR #66 era) plus pricing-page conversion. Source: audit_log records with kind IN ('payment.grace_started', 'payment.grace_reminder', 'payment.grace_recovered', 'payment.grace_terminated') emitted by api/internal/handlers/billing.go, plus Transaction events on /pricing and /api/v1/billing/checkout. Pairs with the grace-terminated-spike alert.",
+  "description": "Payment dunning funnel (PR #66 era) plus pricing-page conversion. Source: audit_log records with audit_kind IN ('payment.grace_started', 'payment.grace_reminder', 'payment.grace_recovered', 'payment.grace_terminated') emitted by api/internal/handlers/billing.go, plus Transaction events on /pricing and /api/v1/billing/checkout. Pairs with the grace-terminated-spike alert.",
   "permissions": "PUBLIC_READ_WRITE",
   "pages": [
     {
@@ -15,7 +15,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT filter(count(*), WHERE kind = 'payment.grace_started') AS 'grace_started', filter(count(*), WHERE kind = 'payment.grace_reminder') AS 'grace_reminder', filter(count(*), WHERE kind = 'payment.grace_recovered') AS 'grace_recovered', filter(count(*), WHERE kind = 'payment.grace_terminated') AS 'grace_terminated' FROM Log WHERE service = 'api' AND kind LIKE 'payment.grace_%' SINCE 7 days ago"
+                "query": "SELECT filter(count(*), WHERE audit_kind = 'payment.grace_started') AS 'grace_started', filter(count(*), WHERE audit_kind = 'payment.grace_reminder') AS 'grace_reminder', filter(count(*), WHERE audit_kind = 'payment.grace_recovered') AS 'grace_recovered', filter(count(*), WHERE audit_kind = 'payment.grace_terminated') AS 'grace_terminated' FROM Log WHERE service = 'api' AND audit_kind LIKE 'payment.grace_%' SINCE 7 days ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -29,7 +29,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT (filter(count(*), WHERE kind = 'payment.grace_recovered') / filter(count(*), WHERE kind = 'payment.grace_started')) * 100 AS 'recovery %' FROM Log WHERE service = 'api' AND kind IN ('payment.grace_started', 'payment.grace_recovered') SINCE 7 days ago"
+                "query": "SELECT (filter(count(*), WHERE audit_kind = 'payment.grace_recovered') / filter(count(*), WHERE audit_kind = 'payment.grace_started')) * 100 AS 'recovery %' FROM Log WHERE service = 'api' AND audit_kind IN ('payment.grace_started', 'payment.grace_recovered') SINCE 7 days ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false },
@@ -47,7 +47,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'payment.grace_terminated' TIMESERIES AUTO SINCE 7 days ago"
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind = 'payment.grace_terminated' TIMESERIES AUTO SINCE 7 days ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
