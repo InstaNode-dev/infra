@@ -1,0 +1,105 @@
+# nats-proxy — NATS-aware TCP proxy.
+#
+# Listens on :4222 inside the cluster. ingress-nginx ingress-nginx-tcp routes
+# the LoadBalancer's public 4222 port to this Service. The proxy speaks first
+# (NATS protocol requires the SERVER to greet with INFO), parses the client's
+# CONNECT frame for `auth_token`, looks up `nats_route_by_token:<token>` in
+# Redis, and forwards bytes to the dedicated pod backing that customer's NATS
+# instance.
+#
+# The dedicated pod has no NATS auth configured — the routing IS the
+# multi-tenancy boundary. Any client that can produce a valid token gets
+# steered to the right pod; any unknown token is closed with -ERR before
+# touching a backend.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instant-nats-proxy
+  namespace: instant
+  labels:
+    app: instant-nats-proxy
+spec:
+  # replicas: 2 is the intended HA posture — the proxy is stateless and
+  # per-connection (see k8s/data/nats-ha/README.md "How instant-nats-proxy
+  # discovers cluster members"), so it scales horizontally cleanly, and the
+  # nats-ha migration notes assume 2+ replicas as the cutover baseline.
+  # KNOWN DRIFT (BugBash 2026-05-18, T9b): prod currently runs 1 replica —
+  # live was never scaled up to match this manifest. The infra repo has no
+  # auto-apply, so reconciliation is an operator action:
+  #   kubectl -n instant scale deploy/instant-nats-proxy --replicas=2
+  # Do NOT lower this to 1 to "match live" — that would bake the SPOF into
+  # the source of truth.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: instant-nats-proxy
+  template:
+    metadata:
+      labels:
+        app: instant-nats-proxy
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: nats-proxy
+          image: ghcr.io/REDACTED/instant-nats-proxy:v0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: nats
+              containerPort: 4222
+              protocol: TCP
+          env:
+            - name: NP_LISTEN
+              value: ":4222"
+            - name: NP_REDIS_URL
+              value: "redis://redis.instant.svc.cluster.local:6379"
+            - name: NP_ROUTE_PREFIX
+              value: "nats_route_by_token:"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+          readinessProbe:
+            tcpSocket:
+              port: 4222
+            initialDelaySeconds: 1
+            periodSeconds: 3
+          livenessProbe:
+            tcpSocket:
+              port: 4222
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: instant-nats-proxy
+  namespace: instant
+  labels:
+    app: instant-nats-proxy
+spec:
+  selector:
+    app: instant-nats-proxy
+  ports:
+    - name: nats
+      port: 4222
+      targetPort: 4222
+      protocol: TCP
