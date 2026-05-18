@@ -37,6 +37,14 @@ rules:
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # Batch Jobs — the api runs each Kaniko build as a Job inside the
+  # per-deploy namespace (client.go BatchV1().Jobs(ns).Create/Get/Delete).
+  # Without this rule every /deploy/new and /stacks/new build is
+  # RBAC-Forbidden at Job creation.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+
   # Ingresses (Traefik on k3s uses networking.k8s.io/v1).
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]

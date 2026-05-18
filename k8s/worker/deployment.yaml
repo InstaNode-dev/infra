@@ -14,7 +14,7 @@ metadata:
   annotations:
     instanode.dev/image-pin-retention-days: "730"
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: instant-worker
@@ -24,6 +24,17 @@ spec:
         app: instant-worker
     spec:
       serviceAccountName: instant-worker
+      # Multi-worker is safe — River queue uses Postgres SELECT FOR UPDATE
+      # SKIP LOCKED so each job lands on exactly one worker.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: instant-worker
+                topologyKey: kubernetes.io/hostname
       containers:
         - name: worker
           image: instant-worker:local
@@ -31,13 +42,11 @@ spec:
           ports:
             - containerPort: 8091
               name: liveness
-          # Probe split (2026-05-13): /healthz checks River queue connectivity
-          # + DB pool (slow on cold start); /livez is process-only. Worker
-          # boots after migrations finish (it owns no migrations of its own),
-          # but heavy job replay on restart can stall /healthz briefly.
-          # See PR body for the worker follow-up adding GET /livez.
-          # Until that handler ships, /livez 404s and liveness falls back to
-          # failureThreshold=6 grace (≈3 min).
+          # Probes (2026-05-18): the worker binary registers ONLY /healthz
+          # (plus /metrics) — it never serves /livez. All three probes hit
+          # /healthz. /healthz checks River queue connectivity + DB pool
+          # (slow on cold start); heavy job replay on restart can stall it
+          # briefly, which the generous startupProbe budget absorbs.
           startupProbe:
             httpGet:
               path: /healthz
@@ -53,11 +62,18 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /livez          # process-only; see startupProbe note
+              path: /healthz        # worker serves only /healthz (no /livez)
               port: 8091
             initialDelaySeconds: 15
             periodSeconds: 30
             failureThreshold: 6      # 6 × 30s = 3 min before SIGKILL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
           env:
             # ── Observability (track 6 of 8) ──────────────────────────────────
             # NEW_RELIC_LICENSE_KEY pulled from instant-infra-secrets. When
@@ -97,7 +113,7 @@ spec:
                   name: instant-infra-secrets
                   key: PROVISIONER_SECRET
             - name: ENVIRONMENT
-              value: development
+              value: production
             - name: KUBE_NAMESPACE_APPS
               value: "instant-apps"
             # MinIO storage_bytes scanner — added 2026-05-11 in worker
@@ -123,3 +139,13 @@ spec:
                   name: instant-infra-secrets
                   key: MINIO_ROOT_PASSWORD
                   optional: true
+            # Brevo sender identity for the raw-HTML send path (added
+            # 2026-05-15). The dashboard-template path was inheriting a
+            # personal email from the Brevo sender field — sending these
+            # via code-controlled env vars closes that bug. Defaults in
+            # brevo_provider.go (noreply@instanode.dev / "instanode")
+            # take over if the env var is absent.
+            - name: BREVO_SENDER_EMAIL
+              value: "noreply@instanode.dev"
+            - name: BREVO_SENDER_NAME
+              value: "instanode"

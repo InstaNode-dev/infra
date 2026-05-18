@@ -14,7 +14,7 @@ metadata:
   annotations:
     instanode.dev/image-pin-retention-days: "730"
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: instant-provisioner
@@ -26,6 +26,16 @@ spec:
       # ServiceAccount grants ClusterRole permissions for k8s dedicated backend.
       # When K8S_DEDICATED_BACKEND=false (default), the SA is still present but unused.
       serviceAccountName: instant-provisioner
+      # Spread replicas across nodes so node loss doesn't take all gRPC handlers down.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: instant-provisioner
+                topologyKey: kubernetes.io/hostname
       initContainers:
         - name: wait-for-provisioner-db
           image: busybox:1.36
@@ -157,14 +167,11 @@ spec:
                 secretKeyRef:
                   name: minio-secrets
                   key: MINIO_ROOT_PASSWORD
-          # Probe split (2026-05-13): readiness hits the /healthz sidecar on
-          # port 8092 (checks DB + pool init). Liveness hits /livez on the
-          # same sidecar — process-only check that returns 200 unconditionally
-          # so a slow pool warm-up can't kill a healthy pod. Startup probe
-          # gives 10 minutes for pool pre-creation before liveness takes over.
-          # See PR body for the api/provisioner follow-up adding GET /livez.
-          # Until that handler ships, /livez 404s and liveness falls back to
-          # failureThreshold=6 grace (≈3 min).
+          # Probes (2026-05-18): the provisioner's /healthz sidecar on port
+          # 8092 registers ONLY /healthz — it never serves /livez. All three
+          # probes hit /healthz (checks DB + pool init). The generous
+          # startupProbe budget (10 min) absorbs hot-pool pre-creation before
+          # the liveness probe takes over.
           startupProbe:
             httpGet:
               path: /healthz
@@ -180,8 +187,15 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /livez          # process-only; see startupProbe note
+              path: /healthz        # provisioner serves only /healthz (no /livez)
               port: 8092
             initialDelaySeconds: 15
             periodSeconds: 30
             failureThreshold: 6      # 6 × 30s = 3 min before SIGKILL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
