@@ -51,25 +51,15 @@ spec:
               until pg_isready -h postgres-platform -U instant -d instant_platform; do
                 echo "Waiting for platform DB..."; sleep 2
               done
-      volumes:
-        - name: docker-sock
-          hostPath:
-            path: /run/docker.sock   # Lima VM's actual dockerd socket (not the macOS-forwarded one)
-            type: Socket
       containers:
         - name: api
           image: instant-api:local   # built with: docker build -t instant-api:local .
           ports:
             - containerPort: 8080
-          volumeMounts:
-            - name: docker-sock
-              mountPath: /var/run/docker.sock
           envFrom:
             - configMapRef:
                 name: instant-config
           env:
-            - name: DOCKER_HOST
-              value: unix:///var/run/docker.sock
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
