@@ -24,10 +24,27 @@ scrape_configs:
     metrics_path: /metrics
     scrape_interval: 10s
 
-  # instant.dev API — when running in local k8s NodePort (port 30080)
-  - job_name: 'instant-api-k8s'
+  # instant.dev API — when running in k8s. The NodePort (30080) was retired
+  # 2026-05-11; the Service is ClusterIP-only. This job targets the in-cluster
+  # Service DNS, so Prometheus must itself run inside the cluster to resolve it.
+  # The job name 'instant-api' matches the up{job="instant-api"} selector in
+  # k8s/prometheus-rules.yaml (APIDown alert).
+  - job_name: 'instant-api'
     static_configs:
-      - targets: ['host.docker.internal:30080']
+      - targets: ['instant-api.instant.svc.cluster.local:8080']
+        labels:
+          env: 'k8s'
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # instant.dev worker — River background-job processor. Serves /metrics on
+  # port 8091 (the same port as /healthz). The job name 'instant-worker'
+  # matches the up{job="instant-worker"} selector and the worker-only metrics
+  # (instant_expired_resources_total, instant_active_anonymous_resources) used
+  # by the AnonymousResourceExpiryStopped alert in k8s/prometheus-rules.yaml.
+  - job_name: 'instant-worker'
+    static_configs:
+      - targets: ['instant-worker.instant-infra.svc.cluster.local:8091']
         labels:
           env: 'k8s'
     metrics_path: /metrics

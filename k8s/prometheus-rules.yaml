@@ -85,3 +85,17 @@ spec:
             severity: warning
           annotations:
             summary: "No anonymous expirations in 1h while many active TTL resources remain (worker metrics)"
+
+        # Storage IAM user creation failures in the /storage/new hot path.
+        # A failure here blocks a paying customer's signup-to-first-byte flow.
+        # Counter source: api/internal/handlers/storage.go (instant_storage_iam_users_failed_total,
+        # labelled op=create|delete). This is the guaranteed-working equivalent of the
+        # New Relic storage-iam-create-failed alert, which depends on the NR Prometheus
+        # OpenMetrics integration being configured.
+        - alert: StorageIamCreateFailures
+          expr: increase(instant_storage_iam_users_failed_total{op="create"}[5m]) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Storage IAM user create failures > 0 in 5m (signup-blocking)"

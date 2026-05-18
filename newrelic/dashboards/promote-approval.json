@@ -1,6 +1,6 @@
 {
   "name": "instant-api — promote approval flow",
-  "description": "Email-link approval gate for stack promotion (PR #65 era). Tracks time-to-approval, rejection rate, and bypass detection. Source: audit_log records with kind IN ('promote.approval_requested', 'promote.approved', 'promote.rejected') emitted by api/internal/handlers/stack.go. Pairs with the promote-bypass-detected alert.",
+  "description": "Email-link approval gate for stack promotion (PR #65 era). Tracks time-to-approval, rejection rate, and bypass detection. Source: audit_log records with audit_kind IN ('promote.approval_requested', 'promote.approved', 'promote.rejected') emitted by api/internal/handlers/stack.go. Pairs with the promote-bypass-detected alert.",
   "permissions": "PUBLIC_READ_WRITE",
   "pages": [
     {
@@ -15,7 +15,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT histogram(approval_latency_seconds, 50, 20) FROM Log WHERE service = 'api' AND kind = 'promote.approved' AND approval_latency_seconds IS NOT NULL SINCE 7 days ago"
+                "query": "SELECT histogram(approval_latency_seconds, 50, 20) FROM Log WHERE service = 'api' AND audit_kind = 'promote.approved' AND approval_latency_seconds IS NOT NULL SINCE 7 days ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -29,7 +29,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT (filter(count(*), WHERE kind = 'promote.approved') / (filter(count(*), WHERE kind = 'promote.approved') + filter(count(*), WHERE kind = 'promote.rejected'))) * 100 AS 'approved %' FROM Log WHERE service = 'api' AND kind IN ('promote.approved', 'promote.rejected') SINCE 7 days ago"
+                "query": "SELECT (filter(count(*), WHERE audit_kind = 'promote.approved') / (filter(count(*), WHERE audit_kind = 'promote.approved') + filter(count(*), WHERE audit_kind = 'promote.rejected'))) * 100 AS 'approved %' FROM Log WHERE service = 'api' AND audit_kind IN ('promote.approved', 'promote.rejected') SINCE 7 days ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false },
@@ -47,7 +47,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'promote.approval_requested' FACET env SINCE 7 days ago"
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind = 'promote.approval_requested' FACET env SINCE 7 days ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -61,7 +61,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind IN ('promote.approval_requested', 'promote.approved', 'promote.rejected') FACET kind TIMESERIES AUTO SINCE 7 days ago"
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind IN ('promote.approval_requested', 'promote.approved', 'promote.rejected') FACET audit_kind TIMESERIES AUTO SINCE 7 days ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -75,7 +75,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT filter(uniqueCount(approval_token), WHERE kind = 'promote.approval_requested') - filter(uniqueCount(approval_token), WHERE kind IN ('promote.approved', 'promote.rejected')) AS 'pending' FROM Log WHERE service = 'api' AND kind IN ('promote.approval_requested', 'promote.approved', 'promote.rejected') SINCE 24 hours ago"
+                "query": "SELECT filter(uniqueCount(approval_token), WHERE audit_kind = 'promote.approval_requested') - filter(uniqueCount(approval_token), WHERE audit_kind IN ('promote.approved', 'promote.rejected')) AS 'pending' FROM Log WHERE service = 'api' AND audit_kind IN ('promote.approval_requested', 'promote.approved', 'promote.rejected') SINCE 24 hours ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }

@@ -1,6 +1,6 @@
 {
   "name": "instant-api — admin defense-in-depth",
-  "description": "Access patterns and brute-force probe signal for the admin surface (PR #66+ era). Source: audit_log records with kind = 'admin.access' emitted by the admin allowlist middleware, plus Transaction events on ADMIN_PATH_PREFIX routes. Pairs with the admin-allowlist-breach + admin-probe-404-rate alerts.",
+  "description": "Access patterns and brute-force probe signal for the admin surface (PR #66+ era). Source: audit_log records with audit_kind = 'admin.access' emitted by the admin allowlist middleware, plus Transaction events on ADMIN_PATH_PREFIX routes. Pairs with the admin-allowlist-breach + admin-probe-404-rate alerts.",
   "permissions": "PUBLIC_READ_WRITE",
   "pages": [
     {
@@ -15,7 +15,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'admin.access' FACET path_suffix TIMESERIES AUTO SINCE 24 hours ago LIMIT 20"
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind = 'admin.access' FACET path_suffix TIMESERIES AUTO SINCE 24 hours ago LIMIT 20"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -29,7 +29,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND kind = 'admin.access' FACET user_email SINCE 24 hours ago LIMIT 25"
+                "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind = 'admin.access' FACET user_email SINCE 24 hours ago LIMIT 25"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -61,7 +61,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT count(*) AS 'hits', latest(timestamp) AS 'last seen' FROM Log WHERE service = 'api' AND kind = 'admin.access' FACET user_email, path_suffix SINCE 24 hours ago LIMIT 50"
+                "query": "SELECT count(*) AS 'hits', latest(timestamp) AS 'last seen' FROM Log WHERE service = 'api' AND audit_kind = 'admin.access' FACET user_email, path_suffix SINCE 24 hours ago LIMIT 50"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
