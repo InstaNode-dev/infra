@@ -19,7 +19,7 @@ metadata:
     # any delete-old-versions workflow that targets prod tags.
     instanode.dev/image-pin-retention-days: "730"
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: instant-api
@@ -29,6 +29,17 @@ spec:
         app: instant-api
     spec:
       serviceAccountName: instant-api   # grants deploy-manager ClusterRole (see deploy-rbac.yaml)
+      # Spread replicas across nodes when possible — preferred (not required)
+      # so a 1-node dev cluster still schedules both pods.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: instant-api
+                topologyKey: kubernetes.io/hostname
       initContainers:
         # Wait for platform DB to be ready before starting the API
         - name: wait-for-platform-db
@@ -50,7 +61,6 @@ spec:
           image: instant-api:local   # built with: docker build -t instant-api:local .
           ports:
             - containerPort: 8080
-            - containerPort: 50052
           volumeMounts:
             - name: docker-sock
               mountPath: /var/run/docker.sock
@@ -60,6 +70,16 @@ spec:
           env:
             - name: DOCKER_HOST
               value: unix:///var/run/docker.sock
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: DATABASE_URL
+            - name: CUSTOMER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: CUSTOMER_DATABASE_URL
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -120,11 +140,6 @@ spec:
                 secretKeyRef:
                   name: instant-secrets
                   key: PROVISIONER_SECRET
-            - name: MIGRATOR_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: instant-secrets
-                  key: MIGRATOR_SECRET
             - name: R2_API_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -231,6 +246,18 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 30
             failureThreshold: 6      # 6 × 30s = 3 min before SIGKILL
+          # Resource requests/limits — the api is build-heavy (it shells out
+          # to Kaniko Job orchestration on /deploy/new), so it gets headroom.
+          # The requests are also what the HPA needs to compute utilization;
+          # without them the HPA fires FailedGetResourceMetric and never
+          # scales (P1-W5-15).
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
 ---
 apiVersion: v1
 kind: Service
@@ -238,15 +265,15 @@ metadata:
   name: instant-api
   namespace: instant
 spec:
+  # Externally reached via the cluster's Ingress (ingress-nginx) — see
+  # infra/k8s/api-ingress.yaml. The Service stays ClusterIP so the only
+  # public entrypoint is the LB → Ingress → Service path.
+  # For local dev / E2E: kubectl port-forward svc/instant-api 8080:8080
+  # (NodePort retired 2026-05-11).
+  type: ClusterIP
   selector:
     app: instant-api
   ports:
     - name: http
       port: 8080
       targetPort: 8080
-      nodePort: 30080   # access locally at http://localhost:30080
-    - name: dashboard-grpc
-      port: 50052
-      targetPort: 50052
-      nodePort: 30052
-  type: NodePort   # Rancher Desktop exposes NodePort via localhost
