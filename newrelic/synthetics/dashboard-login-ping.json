@@ -1,0 +1,14 @@
+{
+  "monitorKind": "BROWSER",
+  "name": "instanode dashboard login page",
+  "uri": "https://instanode.dev/app",
+  "period": "EVERY_5_MINUTES",
+  "status": "ENABLED",
+  "locations": ["AWS_US_EAST_1"],
+  "runtime": {
+    "runtimeType": "CHROME_BROWSER",
+    "runtimeTypeVersion": "100",
+    "scriptLanguage": "JAVASCRIPT"
+  },
+  "description": "Browser monitor of the dashboard /app login page. A BROWSER (not SIMPLE) monitor because /app is a React SPA — a SIMPLE ping would pass on the empty index.html shell even if the JS bundle 404s (the stale-deploy chunk-404 failure mode). The browser monitor renders the page and fails if the SPA does not mount. A FAILED check means customers cannot log in."
+}

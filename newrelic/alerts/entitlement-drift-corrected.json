@@ -1,0 +1,38 @@
+{
+  "name": "instant-api — entitlement drift-corrected rising (1h) [resources running on wrong tier limits]",
+  "type": "NRQL",
+  "description": "Warn when the worker's entitlement reconciler is correcting infra entitlement drift — resources whose live connection cap / storage limit no longer matches what their team's tier should grant. instant_entitlement_drift_corrected_total counts resources the reconciler actually re-graded back to the correct limits (a Postgres ALTER USER / Redis maxmemory change really happened). A sustained non-zero rate means upgrades/downgrades are NOT propagating their entitlement changes synchronously — paying customers may be stuck on lower limits, or downgraded customers retaining higher limits. The reconciler self-heals, but a rising count points at a broken primary entitlement-propagation path (ElevateResourceTiersByTeam / provisioner RegradeResource). Source: worker/internal/metrics/metrics.go EntitlementDriftCorrected counter, scraped into NR as a Metric. WARNING — the reconciler corrects it, but the gap needs root-cause work. Threshold ABOVE 3 corrections in a rolling 1h window so steady-state noise (one stray row) does not page.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_entitlement_drift_corrected_total) FROM Metric WHERE service = 'worker'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 3,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 20,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 180,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

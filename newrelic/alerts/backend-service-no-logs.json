@@ -1,0 +1,31 @@
+{
+  "name": "instant — backend service emitted zero logs in 10m (pod down: api / worker / provisioner)",
+  "type": "NRQL",
+  "description": "Page when any of the three backend services (api, worker, provisioner) emits ZERO log records for 10 minutes — a per-service liveness check that catches a crashed/evicted pod, a deadlocked process, or a k8s rollout that never came healthy, even when the k8s readiness probe was satisfied. Faceted by service so the violation names which pod went dark. Every backend binary logs continuously under normal operation (request logs, River job middleware, gRPC handler logs), so a 10-minute silence on any one service is a real outage. Source: Log records, FACET service. Complements api-healthz-down (which checks the api from outside via Synthetics) by covering worker + provisioner, which have no public HTTP surface to ping. fillValue STATIC 0 ensures a fully silent stream is treated as zero, not no-data.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service IN ('api', 'worker', 'provisioner') FACET service"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "BELOW",
+      "threshold": 1,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 1200,
+    "openViolationOnExpiration": true,
+    "closeViolationsOnExpiration": false
+  },
+  "violationTimeLimitSeconds": 86400
+}

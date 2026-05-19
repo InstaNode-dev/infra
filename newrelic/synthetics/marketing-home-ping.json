@@ -1,0 +1,9 @@
+{
+  "monitorKind": "SIMPLE",
+  "name": "instanode marketing home ping",
+  "uri": "https://instanode.dev/",
+  "period": "EVERY_5_MINUTES",
+  "status": "ENABLED",
+  "locations": ["AWS_US_EAST_1", "AWS_EU_WEST_1"],
+  "description": "Uptime ping of the marketing homepage. The onboarding URL appears organically in developer logs; if instanode.dev is down the top-of-funnel is dead. A FAILED check means the marketing surface (instanode-web) is unreachable."
+}

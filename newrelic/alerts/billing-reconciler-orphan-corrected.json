@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — billing reconciler orphan-corrected > 0 (15m) [paid customer slipped past primary path]",
+  "type": "NRQL",
+  "description": "Warn when the worker's billing reconciler orphan sweep has to correct a paid customer the primary webhook path missed. instant_billing_reconciler_orphan_corrected_total counts teams the reconciler elevated because they paid at Razorpay but had no persisted subscription_id (the pending_checkouts row never got its subscription_id written — a webhook-handling or DB-write gap). The reconciler is the safety net; every correction it makes means a customer would have been charged-but-not-upgraded if the net were not there. A rising count says the PRIMARY path (synchronous webhook → upgrade) is dropping payments and should be investigated. Source: worker/internal/metrics/metrics.go BillingReconcilerOrphanCorrected counter, scraped into NR as a Metric. Threshold ABOVE 0 over 15m (one+ reconciler tick); WARNING because the reconciler already self-corrected — the customer IS upgraded — but the primary-path gap needs a root-cause fix.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_billing_reconciler_orphan_corrected_total) FROM Metric WHERE service = 'worker'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 900,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 180,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 1800,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
