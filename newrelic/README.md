@@ -144,3 +144,17 @@ Alert conditions (4):
 - `instant-api — p95 latency > 500ms (5m)`
 - `instant-api — NATS connection failures`
 - `instant-worker — no jobs processed in 10m`
+
+## Synthetic monitoring + silent-failure alerting
+
+Synthetic monitors (NR Synthetics) live in `synthetics/` and are applied by
+`synthetics-apply.sh` (companion to `apply.sh`, separate because synthetic
+monitors use a different family of NerdGraph mutations). Eight new alert
+conditions in `alerts/` catch silent billing/funnel/pod failures keyed on
+signals the app already emits — `billing.charge_undeliverable`,
+`billing.webhook.unhandled_event`, `instant_billing_reconciler_orphan_corrected_total`,
+`instant_entitlement_drift_corrected_total`, `subscription.upgraded`,
+checkout error logs, `SyntheticCheck` results, and per-service log heartbeat.
+
+See `synthetics/SYNTHETICS.md` for the full monitor + alert table, thresholds,
+rationale, and apply commands.

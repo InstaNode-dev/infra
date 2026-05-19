@@ -1,0 +1,38 @@
+{
+  "name": "instant-api — checkout failure / subscription.pending spike (1h)",
+  "type": "NRQL",
+  "description": "Warn when POST /api/v1/billing/checkout is failing — the symptom that the prod paid funnel was broken this session ('seller does not support recurring payments': Razorpay rejected the subscription create, so checkouts errored or hung in subscription.pending and never charged). Catches a checkout that breaks BEFORE any charge webhook would fire — earlier in the funnel than billing.charge_undeliverable, which only sees post-charge failures. Signal: ERROR-level Log records from the checkout handler (message contains 'checkout'). A sustained non-trivial error rate means the buy button is broken for real customers. WARNING at >3/h, CRITICAL at >15/h — low absolute thresholds because at current volume even a handful of failed checkouts is most of the funnel. Source: api/internal/handlers/billing.go checkout handler error logs (service='api'). Pairs with the billing-dunning dashboard's 'Checkout failure rate by error.code' widget for the per-code breakdown.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND level = 'ERROR' AND message LIKE '%checkout%'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 3,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 15,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

@@ -1,0 +1,38 @@
+{
+  "name": "instant-api — /healthz synthetic failing (api pod down / unreachable)",
+  "type": "NRQL",
+  "description": "Page when the api-healthz synthetic monitor records a failed check — the api is down, unreachable, or its /healthz endpoint is returning non-2xx. Keyed on the SyntheticCheck event the New Relic Synthetics ping + scripted-API monitors emit (result = 'FAILED'). Catches: api pod crash loop missed by k8s readiness probes, ingress/TLS breakage, full-cluster outage. CRITICAL on 2 consecutive failed checks (~10m at the 5-min monitor period) to ride out a single transient blip. Source: SyntheticCheck events from monitors 'instant-api healthz ping' and 'instant-api healthz scripted (build-SHA freshness)' — see newrelic/synthetics/. If the NR k8s integration is later installed, add a companion K8sContainerSample condition for pod-restart-count.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM SyntheticCheck WHERE monitorName LIKE 'instant-api healthz%' AND result = 'FAILED'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE_OR_EQUALS",
+      "threshold": 2,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE_OR_EQUALS",
+      "threshold": 1,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 180,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 1800,
+    "openViolationOnExpiration": true,
+    "closeViolationsOnExpiration": false
+  },
+  "violationTimeLimitSeconds": 86400
+}

@@ -1,0 +1,14 @@
+{
+  "monitorKind": "SCRIPT_API",
+  "name": "instant-api healthz scripted (build-SHA freshness)",
+  "period": "EVERY_15_MINUTES",
+  "status": "ENABLED",
+  "locations": ["AWS_US_EAST_1"],
+  "scriptFile": "scripts/api-healthz-scripted.js",
+  "runtime": {
+    "runtimeType": "NODE_API",
+    "runtimeTypeVersion": "16.10",
+    "scriptLanguage": "JAVASCRIPT"
+  },
+  "description": "Scripted API monitor that asserts /healthz returns ok=true, carries a non-placeholder commit_id (not 'dev'/'unknown'), reports migration_status=ok, and was built within the last 30 days. Catches stale-image deploys, un-instrumented builds, and schema drift that a plain status-code ping cannot see. Script: scripts/api-healthz-scripted.js. Feeds the api-healthz-down alert via SyntheticCheck."
+}

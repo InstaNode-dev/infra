@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — billing.charge_undeliverable [customer charged, upgrade NOT delivered]",
+  "type": "NRQL",
+  "description": "HIGHEST SEVERITY. Page on ANY occurrence of a billing.charge_undeliverable audit event — a Razorpay subscription.charged webhook confirmed a real card charge that the platform could NOT translate into a delivered upgrade (team unresolvable, or resolved plan tier not in plans.yaml). Each occurrence is a real customer who paid and did not get what they paid for; an operator must reconcile the charge in the Razorpay dashboard (refund or hand-grant the tier). This is the make-good worklist signal. Source: audit_log row audit_kind = 'billing.charge_undeliverable' written by emitChargeUndeliverableAudit in api/internal/handlers/billing.go, paired with a loud slog.Error. The audit row surfaces in NR as a Log record with the audit_kind attribute (see api/internal/models/audit_log.go — the field is deliberately 'audit_kind', not 'kind'). Threshold is ABOVE 0 so a single charged-but-not-upgraded customer pages immediately.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind = 'billing.charge_undeliverable'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

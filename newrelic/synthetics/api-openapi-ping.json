@@ -1,0 +1,9 @@
+{
+  "monitorKind": "SIMPLE",
+  "name": "instant-api openapi.json ping",
+  "uri": "https://api.instanode.dev/openapi.json",
+  "period": "EVERY_15_MINUTES",
+  "status": "ENABLED",
+  "locations": ["AWS_US_EAST_1"],
+  "description": "Uptime ping of GET /openapi.json — the machine-readable API contract agents and the MCP server consume. A FAILED check means the contract surface is unreachable; agents lose their schema source. 15-minute period (lower-criticality than /healthz)."
+}

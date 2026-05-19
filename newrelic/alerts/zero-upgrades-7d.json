@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — zero successful upgrades in 7 days [dead paid funnel]",
+  "type": "NRQL",
+  "description": "Page when NOT A SINGLE successful paid upgrade has been recorded for a sustained 7-day window. This is the dead-funnel catch: it would have fired the day the prod paid funnel went silent ('seller does not support recurring payments' — checkouts created, no charge webhook ever arrived, nothing else alerted). 'Success' = a subscription.upgraded audit event, which fires only when a Razorpay subscription.charged webhook actually moves a team to a higher tier (api/internal/models/audit_kinds.go AuditKindSubscriptionUpgraded). A low-baseline static threshold is used rather than a NR Baseline condition because early-stage upgrade volume is too sparse for anomaly math — at this stage ANY 7-day stretch with zero upgrades is itself the anomaly worth a human looking. thresholdDuration is 7 days (604800s); fillValue STATIC 0 so a totally silent stream still counts as zero rather than producing no data. RE-TUNE: once steady upgrade volume exists, replace with a Baseline condition keyed on '< Nx expected'.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND audit_kind = 'subscription.upgraded'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "BELOW_OR_EQUALS",
+      "threshold": 0,
+      "thresholdDuration": 604800,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 3600,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 600,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 86400,
+    "openViolationOnExpiration": true,
+    "closeViolationsOnExpiration": false
+  },
+  "violationTimeLimitSeconds": 259200
+}

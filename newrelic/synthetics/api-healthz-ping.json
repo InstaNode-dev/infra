@@ -1,0 +1,9 @@
+{
+  "monitorKind": "SIMPLE",
+  "name": "instant-api healthz ping",
+  "uri": "https://api.instanode.dev/healthz",
+  "period": "EVERY_5_MINUTES",
+  "status": "ENABLED",
+  "locations": ["AWS_US_EAST_1", "AWS_EU_WEST_1"],
+  "description": "Uptime ping of the agent API /healthz endpoint — the primary service. A FAILED check (non-2xx, timeout, DNS, TLS) means agents cannot provision and the dashboard backend is down. Feeds the api-healthz-down alert (SyntheticCheck result='FAILED'). Two locations so a single-region network blip does not false-page."
+}

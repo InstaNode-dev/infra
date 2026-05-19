@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — billing.webhook.unhandled_event [Razorpay event silently swallowed]",
+  "type": "NRQL",
+  "description": "Warn on ANY occurrence of a billing.webhook.unhandled_event WARN log. The Razorpay webhook dispatcher's `default:` case used to silently swallow event types the handler did not recognise — a coverage gap that hid, for example, recurring-payment events the platform never acted on. The default case now logs at WARN with message = 'billing.webhook.unhandled_event' and the event_type / event_id attributes (api/internal/handlers/billing.go ~line 1132). This alert makes that WARN visible: any unhandled Razorpay event type means a webhook coverage gap to triage — either a new event we should handle, or noise to explicitly ignore. Threshold ABOVE 0 (single occurrence) — these are rare and each one is a real gap. Not CRITICAL because a swallowed event is not always customer-impacting, but it must never go unnoticed again.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'api' AND message = 'billing.webhook.unhandled_event'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
