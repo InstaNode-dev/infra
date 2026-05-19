@@ -7,10 +7,21 @@ metadata:
   namespace: instant-infra
 
 ---
-# ClusterRole granting the worker permission to delete stack namespaces.
-# The worker only deletes namespaces it finds in the DB; the label constraint
-# in the code (namespace must start with cfg.KubeNamespaceApps prefix) is an
-# extra defence-in-depth guardrail.
+# ClusterRole granting the worker permission to list and delete stack
+# namespaces.
+#
+# delete: the team_deletion_executor tears down a deleted team's deploy
+#   namespaces (it only deletes namespaces it finds in the DB; the label
+#   constraint in the code — namespace must start with cfg.KubeNamespaceApps
+#   prefix — is an extra defence-in-depth guardrail).
+#
+# list: the orphan_sweep_reconciler's PASS 3 (see
+#   worker/internal/jobs/orphan_sweep_reconciler.go) enumerates every
+#   instant-deploy-* namespace to find owner-less ones whose backing
+#   deployment row / team is gone. Per-app namespaces are created on demand
+#   by the api process, so they cannot be enumerated at RBAC-bind time — a
+#   cluster-scoped list is required. Without this verb the reconciler's
+#   ListDeployNamespaces is denied with a Forbidden error every sweep.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -18,7 +29,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "delete"]
+    verbs: ["get", "list", "delete"]
 
 ---
 # Bind the ClusterRole to the instant-worker ServiceAccount.
@@ -30,6 +41,40 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: instant-worker-stack-cleaner
+subjects:
+  - kind: ServiceAccount
+    name: instant-worker
+    namespace: instant-infra
+
+---
+# ClusterRole granting the worker permission to read Deployment objects across
+# all "instant-deploy-*" namespaces. Used by DeployStatusReconciler (see
+# worker/internal/jobs/deploy_status_reconcile.go) to reconcile the
+# deployments.status DB column from live k8s state every 30s.
+#
+# This is intentionally cluster-scoped because per-app namespaces are created
+# on demand by the api process — we can't enumerate them at RBAC-bind time.
+# Read-only get on deployments.apps is the tightest verb set that makes the
+# reconciler work; the worker has no need to list/watch/patch and gets none.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: instant-worker-deploy-reader
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get"]
+
+---
+# Bind the deploy-reader ClusterRole to the instant-worker ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: instant-worker-deploy-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: instant-worker-deploy-reader
 subjects:
   - kind: ServiceAccount
     name: instant-worker
