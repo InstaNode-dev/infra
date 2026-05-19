@@ -122,12 +122,22 @@ spec:
                 secretKeyRef:
                   name: instant-infra-secrets
                   key: AES_KEY
+            # Hot-pool targets. Raised 2/3/2 -> 10 (and POOL_QUEUE_SIZE added)
+            # to fix load-test finding F1 — the provisioning latency cliff.
+            # A drained pool now refills CONCURRENTLY (bounded) instead of one
+            # item at a time, so a deeper warm buffer no longer costs a
+            # proportionally longer serial refill, and 10 ready items absorbs a
+            # concurrency-8 burst entirely on the fast pool-claim path instead
+            # of falling through to slow live provisioning. Must stay >= the
+            # provisioner code default in internal/config/config.go.
             - name: POOL_POSTGRES_SIZE
-              value: "2"
+              value: "10"
             - name: POOL_REDIS_SIZE
-              value: "3"
+              value: "10"
             - name: POOL_MONGO_SIZE
-              value: "2"
+              value: "10"
+            - name: POOL_QUEUE_SIZE
+              value: "10"
             # ── Kubernetes dedicated backend (Team tier) ──────────────────────
             # See docs/ops-k8s-dedicated.md for the full EKS deployment guide.
             - name: K8S_DEDICATED_BACKEND
