@@ -218,3 +218,64 @@ spec:
           annotations:
             summary: "instant-worker saw a pending_propagations kind it doesn't recognise (kind={{ $labels.kind }})"
             description: "instant_propagation_unknown_kind_total{kind=\"{{ $labels.kind }}\"} > 0 for >5m. A worker pod is running an older image than the api enqueued (kind={{ $labels.kind }} is not in propagationHandlers). Finish the rollout — `kubectl rollout status deploy/instant-worker -n instant-infra` and confirm pods are on the same image as instant-api. The row will dead-letter after propagationMaxAttempts (10) attempts (~24h cumulative backoff) which will fire PropagationDeadLettered above; this is the early warning."
+
+    # instant-worker — orphan_sweep PASS 3/4/5/6 reap alerts (2026-05-20).
+    # Fires on the worker's instant_orphan_sweep_reaped_total counter
+    # (introduced in worker repo, see metrics.go::OrphanSweepReapedTotal).
+    # Each reap is labelled by `reason`; the alerts here key on the
+    # reasons that imply a distinct upstream bug worth paging on.
+    - name: instant-worker-orphan-sweep
+      rules:
+        - alert: OrphanSweepNoDBRowReap
+          expr: |
+            sum(rate(instant_orphan_sweep_reaped_total{reason="no_db_row"}[1h])) > 0
+          for: 1h
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "orphan_sweep reaped an instant-deploy-* namespace with NO backing deployments row (P0-3 atomic-provision bug)"
+            description: |
+              instant_orphan_sweep_reaped_total{reason="no_db_row"} > 0 for >1h.
+              A no_db_row event means a k8s namespace was provisioned (instant-deploy-<appID>)
+              but no deployments row exists for that app_id — the api created the namespace
+              but the INSERT into deployments never landed. This is the P0-3 atomic-provision
+              symptom surfacing in prod.
+              Investigate same hour: search NR Logs for `jobs.orphan_sweep.proposed_reap`
+              with reason=no_db_row, capture the app_id, then trace back through the api
+              POST /deploy/new logs for the same time window to find the partial-commit
+              path that needs the atomic-rollback fix.
+
+        - alert: OrphanSweepStuckBuildSpike
+          expr: |
+            sum(rate(instant_orphan_sweep_reaped_total{reason="failed_build"}[15m])) * 900 > 5
+          for: 15m
+          labels:
+            severity: warning
+            service: worker
+          annotations:
+            summary: "orphan_sweep PASS 6 flipped >5 stuck builds to failed in 15m (build pipeline degraded)"
+            description: |
+              instant_orphan_sweep_reaped_total{reason="failed_build"} > 5 events in 15m.
+              PASS 6 catches deployments stuck in 'building'/'deploying' for >30min whose
+              pod is in ImagePullBackOff/ErrImagePull/CrashLoopBackOff. A burst means many
+              customers' builds are wedged at once — the most likely cause is a ghcr.io
+              outage, a Kaniko image-push 403 (worker-rbac.yaml GHCR_PUSH_TOKEN scope), or
+              an upstream registry auth failure. Check ghcr.io status, the deploy.yml CI
+              push step, and the kaniko build pod logs in instant-deploy-* namespaces.
+
+        - alert: OrphanSweepReapFailureRate
+          expr: |
+            sum(rate(instant_orphan_sweep_reap_failed_total[15m])) by (reason) > 0
+          for: 30m
+          labels:
+            severity: warning
+            service: worker
+          annotations:
+            summary: "orphan_sweep reap_failed > 0 sustained for 30m (reason={{ $labels.reason }})"
+            description: |
+              instant_orphan_sweep_reap_failed_total{reason="{{ $labels.reason }}"} > 0
+              sustained for >30 minutes. The reconciler detected an orphan but could not
+              clean it — a k8s API outage or a DB write failure. Single transient events
+              are fine; a sustained rate means the reap path itself is broken. Check
+              instant-worker pod logs for `jobs.orphan_sweep.*_delete_failed` lines.
