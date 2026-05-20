@@ -1,0 +1,37 @@
+{
+  "name": "instant-* — /readyz component failed > 5 min (Brevo / Razorpay / DO Spaces / DB / River)",
+  "type": "NRQL",
+  "description": "Page when ANY /readyz component on ANY service stays at status=failed for >5 minutes. The metric readyz_check_status is set per-probe by api / worker / provisioner /readyz handlers (1=ok, 0.5=degraded, 0=failed); a sustained 0 means the upstream is broken in a way the operator must investigate. This is the exact alert that would have caught the Brevo silent-rejection bug from 2026-05-20 weeks earlier — Brevo's /v3/account would have returned 401 on every probe, the brevo check would have flipped to 0.5 (degraded) immediately, and a sustained-degraded alert below would have paged the on-call. CRITICAL on 5 minutes at 0; WARNING on 5 minutes at 0.5 (degraded — upstream reachable but creds/policy off). Labels: service=instant-{api,worker,provisioner}, check={platform_db,customer_db,provisioner_grpc,brevo,razorpay,redis,do_spaces,river,backend_*}. Source: Prometheus gauge readyz_check_status forwarded to NR via OTLP or the Prometheus → NR adapter — same path as the existing instant_circuit_breaker_state gauge. Runbook: open the failing pod's /readyz body for last_error, cross-check against the upstream status page, rotate keys if 401, file an incident if 5xx.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT latest(readyz_check_status) FROM Metric WHERE metricName = 'readyz_check_status' FACET service, check"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "EQUALS",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "EQUALS",
+      "threshold": 0.5,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 60,
+    "fillOption": "LAST_VALUE"
+  },
+  "expiration": {
+    "expirationDuration": 600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
