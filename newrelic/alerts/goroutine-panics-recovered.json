@@ -1,0 +1,31 @@
+{
+  "name": "instant-* — goroutine_panics_recovered > 0 [code defect, panic recovered but flagged]",
+  "type": "NRQL",
+  "description": "Page on ANY increment of `instant_goroutine_panics_total` (api) or `instant_worker_goroutine_panics_recovered_total` (worker). Both counters are incremented by the safego.Go() wrapper when a deferred recover() catches a panic that would otherwise crash a background goroutine. Recovered panics keep the pod up but ALMOST ALWAYS indicate a real code defect — a nil map access, a divide-by-zero, or a missed error path that should have been a regular return. Each occurrence is a signal that the code shipped with a bug the test suite didn't catch. Threshold is ABOVE 0 (any single panic pages) — but with thresholdDuration=300s + aggregationWindow=60s so a one-off panic with no recurrence still notifies the operator without alert-storming. Source: common/safego package; counters in api/internal/metrics/metrics.go + worker/internal/metrics/metrics.go. BugBash 2026-05-20.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_goroutine_panics_total) + sum(instant_worker_goroutine_panics_recovered_total) FROM Metric"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

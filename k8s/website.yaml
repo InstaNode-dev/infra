@@ -8,10 +8,13 @@ metadata:
   name: instant-website-config
   namespace: instant
 data:
-  # Override this for production: https://instant.dev
-  # For local k8s (Rancher Desktop / minikube): use the API's NodePort
-  # The API is exposed on NodePort 30080 by default (see app.yaml)
-  API_BASE_URL: "http://localhost:30080"
+  # Override this for production: https://api.instanode.dev
+  # For local k8s (Rancher Desktop / minikube): port-forward the API:
+  #   kubectl port-forward -n instant svc/instant-api 8080:8080
+  # NOTE: the legacy NodePort 30080 was retired 2026-05-11 — instant-api
+  # Service is now ClusterIP only (see app.yaml). Older ConfigMap values
+  # of http://localhost:30080 will fail to connect after re-apply.
+  API_BASE_URL: "http://localhost:8080"
 
 ---
 apiVersion: apps/v1

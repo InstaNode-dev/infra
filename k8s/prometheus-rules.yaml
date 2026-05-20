@@ -280,6 +280,55 @@ spec:
               are fine; a sustained rate means the reap path itself is broken. Check
               instant-worker pod logs for `jobs.orphan_sweep.*_delete_failed` lines.
 
+    # instant-* — code-defect signals (BugBash 2026-05-20).
+    # Both counters are incremented by the safego.Go wrapper's deferred
+    # recover() when a panic would otherwise crash a background goroutine.
+    # Recovered panics keep the pod up, but they ALMOST ALWAYS indicate a
+    # real code defect that escaped the test suite. Page on any occurrence.
+    - name: instant-code-defects
+      rules:
+        - alert: GoroutinePanicsRecovered
+          expr: |
+            sum(rate(instant_goroutine_panics_total[5m]))
+              + sum(rate(instant_worker_goroutine_panics_recovered_total[5m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+            service: platform
+          annotations:
+            summary: "instant-* recovered a goroutine panic — code defect shipped to prod"
+            description: |
+              instant_goroutine_panics_total (api) + instant_worker_goroutine_panics_recovered_total (worker)
+              > 0 for >5m. Some goroutine panicked and the safego.Go wrapper caught it. The
+              pod stayed up, but the panic almost certainly indicates a missed error path or
+              nil-deref shipped past the test gates. Grep NR Logs for `safego.panic_recovered`
+              within the same time window to find the stack trace; fix the root cause and ship.
+
+    # instant-worker — entitlement_regrade_failed > 0 (BugBash 2026-05-20).
+    # The entitlement_reconciler job calls provisioner.RegradeResource() to
+    # raise a tier-drifted resource's backend limits to the team's current
+    # plan tier. A failure here = a paying customer is still on lower-tier
+    # backend limits despite paying for the higher tier. Pair with the
+    # billing-charge-undeliverable alert (inverse failure mode: tier-not-
+    # translated-to-DB).
+    - name: instant-worker-entitlements
+      rules:
+        - alert: EntitlementRegradeFailed
+          expr: |
+            sum by (service) (rate(instant_entitlement_regrade_failed_total[10m])) > 0
+          for: 10m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "entitlement_regrade_failed > 0 — paying customer on wrong tier limits"
+            description: |
+              instant_entitlement_regrade_failed_total > 0 for >10m. The entitlement_reconciler
+              failed to call provisioner.RegradeResource() to raise a resource's backend limits
+              to match the team's current paid tier. A paying customer is getting lower-tier
+              infrastructure. Grep worker logs for `jobs.entitlement_reconciler.regrade_failed`;
+              pair with billing-charge-undeliverable (inverse: tier not translated to DB at all).
+
     # CHAOS F1 (2026-05-20) — propagation_runner used to silently mark APPLIED on
     # any row whose target resource was missing/in an unexpected state. The fix
     # added unexpected_skip counting AND treats those rows as Failure (counts
