@@ -99,3 +99,22 @@ spec:
             severity: critical
           annotations:
             summary: "Storage IAM user create failures > 0 in 5m (signup-blocking)"
+
+        # NATS credential issuance failures — the queueprovider abstraction
+        # could not mint an isolated per-tenant account JWT for a /queue/new
+        # call. MR-P0-5 (NATS per-tenant isolation, 2026-05-20). Each failure
+        # means that tenant landed in legacy_open mode = no isolation =
+        # shares the unauthenticated NATS namespace with everyone else.
+        # Counter source: api/internal/handlers/queue.go (queue.cred_issue_failed
+        # → metrics.NatsAuthFailures.Inc()). Common cause: operator seed in
+        # the nats-operator Secret is out of sync with the running
+        # nats-server's operator JWT.
+        - alert: NATSAuthFailures
+          expr: increase(nats_auth_failures_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+            service: queue
+          annotations:
+            summary: "NATS auth failures > 0 in 5m — tenants landing in legacy_open (no isolation)"
+            description: "{{ $value }} NATS credential-issuance failures in 5m. Each failure = one tenant /queue/new that fell back to unauthenticated NATS. Check operator seed in nats-operator Secret matches running nats-server."

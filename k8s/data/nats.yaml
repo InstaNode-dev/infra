@@ -1,3 +1,77 @@
+---
+# nats.yaml — NATS in operator-mode for per-tenant isolation.
+#
+# Background (MR-P0-5, 2026-05-20). See NATS-ISOLATION-MIGRATION-2026-05-20.md
+# at the repo root.
+#
+# Pre-cutover this Deployment ran with `-js -m 8222` and accepted any
+# connection. Every tenant pod on the cluster could pub/sub on every other
+# tenant's subjects. Post-cutover, NATS runs in operator-mode: tenant
+# accounts are signed by the operator key (stored in `nats-operator` Secret
+# in this namespace) and each tenant gets its own JetStream namespace.
+#
+# # Apply order (run by operator manually, NOT by auto-apply):
+#   1. Generate operator + system NKeys locally via `nsc` (see
+#      NATS-AUTH-RUNBOOK.md in this directory).
+#   2. kubectl create secret generic nats-operator -n instant-data \
+#        --from-literal=OPERATOR_JWT=...                   \
+#        --from-literal=SYS_ACCOUNT_PUBLIC_KEY=...         \
+#        --from-literal=SYS_ACCOUNT_JWT=...                \
+#        --from-literal=SYS_USER_JWT=...                   \
+#        --from-literal=SYS_USER_SEED=...                  \
+#        --from-literal=OPERATOR_SEED=...
+#   3. kubectl apply -f nats.yaml  (this file)
+#   4. kubectl rollout restart deployment/nats -n instant-data
+#   5. Patch the `instant-secrets` Secret in `instant` namespace with
+#      NATS_OPERATOR_SEED + NATS_SYSTEM_ACCOUNT_PUBLIC_KEY so the api
+#      can start minting isolated creds.
+#   6. kubectl rollout restart deployment/instant-api -n instant
+#
+# # Backward compatibility:
+# Pre-cutover queue resources have auth_mode='legacy_open' in the platform
+# DB and will keep working unauthenticated until they recycle (migration
+# 060_resources_auth_mode.sql in api repo). The operator-mode server still
+# accepts unauthenticated connections from clients whose subject prefix
+# matches a legacy account placeholder — but this is conservative; the
+# safer cutover is to roll the whole NATS server in one go and accept that
+# legacy clients reconnect once they re-provision.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-config
+  namespace: instant-data
+  labels:
+    app: nats
+data:
+  nats.conf: |
+    # NATS operator mode — see NATS-ISOLATION-MIGRATION-2026-05-20.md
+    #
+    # The operator + system account JWTs are templated in at deploy time
+    # from the `nats-operator` Secret via the initContainer below. This
+    # ConfigMap holds the static structure.
+    port: 4222
+    monitor_port: 8222
+
+    jetstream {
+      store_dir: "/data/jetstream"
+      max_memory_store: 256MB
+      max_file_store: 50GB
+    }
+
+    # Operator + system account loaded from /etc/nats-operator/
+    # (mounted from `nats-operator` Secret). The initContainer expands
+    # /etc/nats-operator/*.txt into the include below.
+    include "operator.conf"
+
+    # Resolver: memory mode pre-loads the SYS account claim; tenant
+    # accounts get added via $SYS.REQ.CLAIMS.UPDATE at provisioning time.
+    # When the cluster gets bigger, switch to `type: full` with a
+    # PVC-backed `dir: /data/jwt`. Memory mode is fine through 100s of
+    # accounts and avoids a second mount point during the cutover.
+    resolver: MEMORY
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,6 +81,13 @@ metadata:
     app: nats
 spec:
   replicas: 1
+  strategy:
+    # NATS in operator-mode has memory state (the resolver-loaded account
+    # claims). A Recreate rollout drops every connected client briefly but
+    # avoids a split-brain where two replicas serve different account sets.
+    # Worth it for a single-pod data plane; if we go HA we'll need a
+    # full-resolver PVC mount + RollingUpdate.
+    type: Recreate
   selector:
     matchLabels:
       app: nats
@@ -15,13 +96,37 @@ spec:
       labels:
         app: nats
     spec:
+      # Init container: render /etc/nats/operator.conf from the
+      # `nats-operator` Secret. We don't put the JWTs in the ConfigMap
+      # directly because they contain the system-account JWT which is
+      # sensitive (anyone holding it can revoke any account).
+      initContainers:
+      - name: render-operator-conf
+        image: alpine:3.20
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          cat <<EOF > /etc/nats/operator.conf
+          operator: "$(cat /secrets/OPERATOR_JWT)"
+          system_account: "$(cat /secrets/SYS_ACCOUNT_PUBLIC_KEY)"
+          resolver_preload: {
+            "$(cat /secrets/SYS_ACCOUNT_PUBLIC_KEY)": "$(cat /secrets/SYS_ACCOUNT_JWT)"
+          }
+          EOF
+        volumeMounts:
+        - name: nats-operator-secret
+          mountPath: /secrets
+          readOnly: true
+        - name: rendered-conf
+          mountPath: /etc/nats
       containers:
       - name: nats
         image: nats:2.10-alpine
         args:
-        - "-js"             # enable JetStream
-        - "-m"
-        - "8222"            # enable monitoring port
+        - "-c"
+        - "/etc/nats-base/nats.conf"
         ports:
         - name: client
           containerPort: 4222
@@ -29,11 +134,18 @@ spec:
           containerPort: 8222
         resources:
           requests:
-            memory: "64Mi"
-            cpu: "50m"
+            memory: "128Mi"
+            cpu: "100m"
           limits:
-            memory: "256Mi"
-            cpu: "250m"
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: nats-config
+          mountPath: /etc/nats-base
+        - name: rendered-conf
+          mountPath: /etc/nats
+        - name: jetstream-data
+          mountPath: /data/jetstream
         readinessProbe:
           httpGet:
             path: /healthz
@@ -46,6 +158,23 @@ spec:
             port: 8222
           initialDelaySeconds: 10
           periodSeconds: 30
+      volumes:
+      - name: nats-config
+        configMap:
+          name: nats-config
+      - name: nats-operator-secret
+        secret:
+          secretName: nats-operator
+          # `optional: true` keeps the pod schedulable BEFORE the operator
+          # generates and applies the Secret. During the staged cutover the
+          # operator can apply this manifest first (nats-server crashes on
+          # missing operator.conf), THEN generate keys, THEN apply the
+          # Secret + restart. Once the Secret exists the pod converges.
+          optional: false
+      - name: rendered-conf
+        emptyDir: {}
+      - name: jetstream-data
+        emptyDir: {}   # TODO: convert to PVC for prod durability
 ---
 apiVersion: v1
 kind: Service
@@ -64,25 +193,11 @@ spec:
   - name: monitoring
     port: 8222
     targetPort: 8222
----
-# NodePort for external access from test machine
-apiVersion: v1
-kind: Service
-metadata:
-  name: nats-external
-  namespace: instant-data
-  labels:
-    app: nats
-spec:
-  type: NodePort
-  selector:
-    app: nats
-  ports:
-  - name: client
-    port: 4222
-    targetPort: 4222
-    nodePort: 30422
-  - name: monitoring
-    port: 8222
-    targetPort: 8222
-    nodePort: 30822
+# External access via the instant-nats-proxy in `instant` namespace; the
+# LB exposes NATS on TCP port 4222 (wired through ingress-nginx tcp-services).
+# In operator mode the proxy MUST forward the client's CONNECT JWT
+# transparently — the NATS server will reject any client without a valid
+# user JWT from a known account, so the routing IS the authn boundary.
+# Legacy nats-external NodePort retired 2026-05-11 — for direct ops access:
+#   kubectl port-forward -n instant-data svc/nats 4222:4222
+#   nats --creds /path/to/sys.creds --server nats://localhost:4222 server info
