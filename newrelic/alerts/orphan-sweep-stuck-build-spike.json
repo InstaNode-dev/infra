@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — orphan_sweep PASS 6 flipped >5 stuck builds to failed in 15m (build pipeline degraded)",
+  "type": "NRQL",
+  "description": "P1 warning. instant_orphan_sweep_reaped_total{reason='failed_build'} > 5 events in 15m. PASS 6 catches deployments stuck in 'building'/'deploying' for >30 min whose pod is in ImagePullBackOff/ErrImagePull/CrashLoopBackOff. A burst means many customers' builds are wedged at once — the most likely cause is a ghcr.io outage, a Kaniko image-push 403 (worker-rbac.yaml GHCR_PUSH_TOKEN scope), or an upstream registry auth failure. Check ghcr.io status, the api+worker+provisioner deploy.yml CI push step, and the kaniko build pod logs in instant-deploy-* namespaces. Source: worker/internal/metrics/metrics.go (OrphanSweepReapedTotal), emit site worker/internal/jobs/orphan_sweep_reconciler.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT rate(sum(instant_orphan_sweep_reaped_total), 15 minutes) FROM Metric WHERE metricName = 'instant_orphan_sweep_reaped_total' AND reason = 'failed_build'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 5,
+      "thresholdDuration": 900,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

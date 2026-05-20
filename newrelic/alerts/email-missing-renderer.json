@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — email_missing_renderer (no Go renderer for an email kind — silent user-facing breakage)",
+  "type": "NRQL",
+  "description": "P0 page. email_missing_renderer_total{kind} ticks every time the worker tries to send an email whose `kind` is not in the eventEmailBuilders registry. After the 2026-05-15 expiry-email retro the platform moved 18 email kinds off Brevo templates and onto Go-side renderers; this metric is the registry-iteration sentinel for that decision. ANY tick means a customer-facing email path is broken silently — no body content, no fallback, just a worker ERROR log + a missed message. Runbook: search NR Logs for `worker.email.missing_renderer` with the offending kind, then add the renderer to worker/internal/email/renderers/ AND add the kind to the coverage test that iterates eventEmailBuilders. Source: worker/internal/metrics/metrics.go (EmailMissingRendererTotal), emit site worker/internal/email/forwarder.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(email_missing_renderer_total) FROM Metric WHERE metricName = 'email_missing_renderer_total' FACET kind"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

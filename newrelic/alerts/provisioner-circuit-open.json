@@ -1,0 +1,37 @@
+{
+  "name": "instant-provisioner — circuit breaker OPEN (backend down, fail-fast active)",
+  "type": "NRQL",
+  "description": "P1 page. instant_provisioner_circuit_state{backend} reports the per-backend (postgres / redis / mongo / nats) circuit-breaker state: 0=CLOSED (healthy), 1=HALF_OPEN (probing), 2=OPEN (fail-fast). A sustained OPEN means the provisioner has stopped attempting calls to that backend after N consecutive failures and is failing all provision requests fast with a clear error so the api can render `agent_action: \"retry after the backend is restored\"`. This is BETTER than a hung call, but the customer flow is still degraded. Runbook: check the backend's own /healthz, kubectl logs the upstream pod (postgres-customers / redis-provision / mongodb / nats), and decide whether to roll back, restart, or wait for the half-open probe to close the breaker. Source: provisioner/internal/circuit/circuit.go (ProvisionerCircuitState gauge).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT latest(instant_provisioner_circuit_state) FROM Metric WHERE metricName = 'instant_provisioner_circuit_state' FACET backend"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "EQUALS",
+      "threshold": 2,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "EQUALS",
+      "threshold": 1,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 60,
+    "fillOption": "LAST_VALUE"
+  },
+  "expiration": {
+    "expirationDuration": 600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

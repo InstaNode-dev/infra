@@ -279,3 +279,259 @@ spec:
               clean it — a k8s API outage or a DB write failure. Single transient events
               are fine; a sustained rate means the reap path itself is broken. Check
               instant-worker pod logs for `jobs.orphan_sweep.*_delete_failed` lines.
+
+    # CHAOS F1 (2026-05-20) — propagation_runner used to silently mark APPLIED on
+    # any row whose target resource was missing/in an unexpected state. The fix
+    # added unexpected_skip counting AND treats those rows as Failure (counts
+    # against maxAttempts). This rule pages if the counter ticks more than once
+    # — every unexpected_skip is one class of customer-facing nondeterminism
+    # that the operator should investigate, not just the eventual dead-letter.
+    - name: instant-worker-propagation-skip
+      rules:
+        - alert: PropagationUnexpectedSkip
+          expr: |
+            sum(rate(instant_propagation_unexpected_skip_total[15m])) by (kind, resource_type, skip_reason) > 0
+          for: 15m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "propagation_runner unexpected_skip {{ $labels.kind }} / {{ $labels.resource_type }} / {{ $labels.skip_reason }}"
+            description: |
+              instant_propagation_unexpected_skip_total{kind="{{ $labels.kind }}",resource_type="{{ $labels.resource_type }}",skip_reason="{{ $labels.skip_reason }}"} > 0 for >15m.
+              The post-CHAOS-F1 fix means the row is now counted as a Failure (will eventually dead-letter and fire PropagationDeadLettered above) — but the operator should investigate the schema/state drift NOW. Find the row in pending_propagations, walk back to the api caller, and decide whether the missing resource should be inserted, the propagation row should be aborted, or the underlying race condition should be patched.
+
+    # Email pipeline SEND-side (worker → Brevo /v3/smtp/email). RECEIVE-side
+    # (Brevo → /webhooks/brevo) is covered by the NR email-delivery-ratio
+    # alert. The classification label separates fixable-by-key-rotation
+    # (permanent: 401/403) from fixable-by-backoff (transient: 5xx, 429) so the
+    # operator knows which runbook to follow.
+    - name: instant-worker-brevo-send
+      rules:
+        - alert: BrevoSendErrorsSpike
+          expr: |
+            sum(rate(brevo_send_errors_total[10m])) by (classification, status_code) * 600 > 10
+          for: 10m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "brevo_send_errors_total > 10 in 10m (classification={{ $labels.classification }} status={{ $labels.status_code }})"
+            description: |
+              Worker → Brevo /v3/smtp/email is failing at >10 errors / 10m. Brevo
+              returns 201 the instant it accepts a POST, so a degraded send path
+              never affects the delivery-ratio alert — the messages simply never
+              queue at Brevo. Check classification: `permanent` (401/403) means
+              rotate BREVO_API_KEY; `transient` (5xx/429) means upstream
+              brown-out, the worker's exponential backoff will catch up.
+
+        - alert: BrevoSendErrorsWarning
+          expr: |
+            sum(rate(brevo_send_errors_total[10m])) by (classification, status_code) * 600 > 3
+          for: 10m
+          labels:
+            severity: warning
+            service: worker
+          annotations:
+            summary: "brevo_send_errors_total > 3 in 10m (early warning) classification={{ $labels.classification }}"
+            description: |
+              Lower-severity early-warning twin of BrevoSendErrorsSpike. Lets the
+              operator catch a slow upstream brown-out before it crosses the page
+              threshold. No paging — just investigate during business hours.
+
+    # Login throttle — magic-link rate limiter denial counter. Noisier than a
+    # page; fires WARNING on >10 events in 10m so the operator can correlate
+    # against a /auth/login spike (legitimate users locked out by NAT, dashboard
+    # retry bug, bot sweep).
+    - name: instant-api-magic-link
+      rules:
+        - alert: MagicLinkEmailRateLimited
+          expr: |
+            sum(rate(instant_magic_link_email_rate_limited_total[10m])) * 600 > 10
+          for: 10m
+          labels:
+            severity: warning
+            service: api
+          annotations:
+            summary: "magic-link rate-limiter denied > 10 requests in 10m"
+            description: |
+              instant_magic_link_email_rate_limited_total > 10 events in 10m.
+              Per-email/per-IP magic-link throttle is denying real users at a
+              meaningful rate. Cross-check /auth/login traffic — a spike in
+              denials with no spike in requests means the dashboard is firing
+              retry storms; a spike in both means a bot sweep is wedging the
+              per-IP quota for legitimate users behind the same NAT.
+
+    # Provisioner circuit breaker state. 0=CLOSED (healthy), 1=HALF_OPEN
+    # (probing), 2=OPEN (fail-fast). Sustained OPEN means the provisioner
+    # stopped attempting calls to a backend after N consecutive failures —
+    # better than a hung call, but the customer flow is degraded.
+    - name: instant-provisioner-circuit
+      rules:
+        - alert: ProvisionerCircuitOpen
+          expr: |
+            max(instant_provisioner_circuit_state) by (backend) == 2
+          for: 5m
+          labels:
+            severity: critical
+            service: provisioner
+          annotations:
+            summary: "provisioner circuit breaker OPEN for backend={{ $labels.backend }}"
+            description: |
+              instant_provisioner_circuit_state{backend="{{ $labels.backend }}"} = 2
+              (OPEN) for >5m. The provisioner has stopped attempting calls to
+              this backend; all /db/new, /cache/new, /nosql/new, or /queue/new
+              requests targeting this backend are failing fast. Check the
+              backend's own /healthz, kubectl logs the upstream pod, and decide:
+              roll back the failing change, restart the backend pod, or wait
+              for the half-open probe to close the breaker naturally.
+
+        - alert: ProvisionerCircuitHalfOpen
+          expr: |
+            max(instant_provisioner_circuit_state) by (backend) == 1
+          for: 10m
+          labels:
+            severity: warning
+            service: provisioner
+          annotations:
+            summary: "provisioner circuit breaker HALF_OPEN sustained 10m for backend={{ $labels.backend }}"
+            description: |
+              Backend hasn't closed back to CLOSED after 10 minutes in
+              HALF_OPEN. Probes are still failing intermittently; investigate
+              the upstream before the breaker flips back to OPEN.
+
+    # Go-rendered email registry sentinel. After 2026-05-15 expiry-email retro
+    # the platform moved 18 email kinds off Brevo templates onto Go renderers.
+    # This counter ticks every time the worker tries to send an email kind
+    # that isn't in the eventEmailBuilders registry — a silent user-facing
+    # breakage that page-priority must be P0.
+    - name: instant-worker-email-renderer
+      rules:
+        - alert: EmailMissingRenderer
+          expr: |
+            sum(rate(email_missing_renderer_total[5m])) by (kind) > 0
+          for: 5m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "email_missing_renderer kind={{ $labels.kind }} — silent user-facing breakage"
+            description: |
+              email_missing_renderer_total{kind="{{ $labels.kind }}"} > 0 for >5m.
+              The worker tried to send an email with a kind that has no Go
+              renderer registered in eventEmailBuilders — the message body
+              dropped silently on the floor. Add the renderer to
+              worker/internal/email/renderers/ AND add the kind to the
+              coverage test that iterates eventEmailBuilders so this can't
+              happen again for the same kind.
+
+    # /readyz deep-health gauge, exposed by api, worker, and provisioner via
+    # readyz_check_status{service,check}. 1=ok, 0.5=degraded, 0=failed. This
+    # rule mirrors the NR alert readyz-component-failed.json (which depends
+    # on the OTLP forwarder) so a Prometheus-only operator gets the same
+    # coverage. Same thresholds. Same labels.
+    - name: instant-readyz
+      rules:
+        - alert: ReadyzCheckFailed
+          expr: |
+            max(readyz_check_status) by (service, check) == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.service }} /readyz check {{ $labels.check }} is FAILED"
+            description: |
+              readyz_check_status{service="{{ $labels.service }}",check="{{ $labels.check }}"} == 0 for >5m.
+              The upstream this check probes is unreachable or rejecting calls.
+              Open the failing pod's /readyz body for last_error, cross-check
+              against the upstream status page, rotate keys if 401, file an
+              incident if 5xx.
+
+        - alert: ReadyzCheckDegraded
+          expr: |
+            max(readyz_check_status) by (service, check) == 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.service }} /readyz check {{ $labels.check }} is DEGRADED"
+            description: |
+              readyz_check_status{service="{{ $labels.service }}",check="{{ $labels.check }}"} == 0.5 for >10m.
+              Upstream reachable but creds/policy off (the exact pattern that
+              would have caught the 2026-05-20 Brevo silent-rejection bug weeks
+              earlier — Brevo /v3/account returns 401 on every probe and the
+              brevo check goes 0.5). Rotate the credential / re-validate the
+              policy before the breaker escalates to failed.
+
+    # Brevo RECEIVE-side delivery-ratio alert (Prom mirror of NR
+    # email-delivery-ratio-low.json). Webhook receiver counter
+    # brevo_webhook_events_total{event} — `delivered` / total over 1h.
+    # The 2026-05-20 sender-domain dropout would have shown here within an
+    # hour as a falling ratio. Closed-set event labels keep cardinality
+    # bounded.
+    - name: instant-api-brevo-webhook
+      rules:
+        - alert: BrevoDeliveryRatioLow
+          expr: |
+            (
+              sum(rate(brevo_webhook_events_total{event="delivered"}[1h]))
+            )
+            /
+            clamp_min(
+              sum(rate(brevo_webhook_events_total{event=~"delivered|bounced_hard|bounced_soft|rejected|complaint|deferred|unsubscribed|error"}[1h])),
+              1e-9
+            )
+            < 0.95
+          for: 1h
+          labels:
+            severity: critical
+            service: api
+          annotations:
+            summary: "Brevo delivery ratio < 95% over 1h"
+            description: |
+              <95% of webhook-confirmed Brevo POSTs are landing as `delivered`.
+              Common causes: sender domain dropped from validated list (the
+              2026-05-20 launch incident), DKIM record stale, IP on a blocklist,
+              or a broad bounce/rejected event class spiking.
+
+        - alert: BrevoDeliveryRatioWarn
+          expr: |
+            (
+              sum(rate(brevo_webhook_events_total{event="delivered"}[1h]))
+            )
+            /
+            clamp_min(
+              sum(rate(brevo_webhook_events_total{event=~"delivered|bounced_hard|bounced_soft|rejected|complaint|deferred|unsubscribed|error"}[1h])),
+              1e-9
+            )
+            < 0.98
+          for: 1h
+          labels:
+            severity: warning
+            service: api
+          annotations:
+            summary: "Brevo delivery ratio < 98% over 1h (early warning)"
+
+    # Make-good worklist signal — billing.charge_undeliverable. Customer paid
+    # via Razorpay, platform could NOT translate the charge into a delivered
+    # upgrade (team unresolvable, or resolved plan tier not in plans.yaml).
+    # Each occurrence is a real customer charged but not upgraded; operator
+    # must reconcile in the Razorpay dashboard.
+    - name: instant-worker-billing
+      rules:
+        - alert: BillingChargeUndeliverable
+          expr: |
+            sum(rate(instant_billing_charge_undeliverable_total[1h])) > 0
+          for: 5m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "billing.charge_undeliverable > 0 — paid customer not upgraded"
+            description: |
+              instant_billing_charge_undeliverable_total > 0 in the last hour.
+              A subscription.charged Razorpay webhook confirmed a real card
+              charge that the platform could NOT translate into a delivered
+              upgrade. Find the team in audit_log where audit_kind = 'billing.charge_undeliverable',
+              cross-check against the Razorpay dashboard, refund or hand-grant
+              the tier.

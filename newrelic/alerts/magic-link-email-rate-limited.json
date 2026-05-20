@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — magic_link_email_rate_limited spike (legitimate user being throttled)",
+  "type": "NRQL",
+  "description": "P2 warning. instant_magic_link_email_rate_limited_total ticks every time the magic-link rate limiter denies a /auth/login request (per-email or per-IP). Modal harmless cause: a user double-clicking the login button. Modal harmful cause: an upstream bot sweep wedging the per-IP quota for legitimate users sharing the same NAT or office network, OR a bug in the dashboard re-firing the magic-link request on a hot retry path (BugBash 2026-05-20 found one such case). Threshold here is intentionally noisier than a page — fire WARNING on >10 events in 10 minutes so the operator can correlate against a /auth/login spike. Source: api/internal/metrics/metrics.go (MagicLinkEmailRateLimitedTotal), emit site api/internal/handlers/auth.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_magic_link_email_rate_limited_total) FROM Metric WHERE metricName = 'instant_magic_link_email_rate_limited_total'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 10,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

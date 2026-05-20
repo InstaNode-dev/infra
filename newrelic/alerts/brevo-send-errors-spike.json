@@ -1,0 +1,38 @@
+{
+  "name": "instant-worker — brevo_send_errors_total spike (SEND-side of email pipeline broken)",
+  "type": "NRQL",
+  "description": "P1 page. The SEND-side complement to email-delivery-ratio-low.json: that alert measures Brevo → /webhooks/brevo (RECEIVE), this one measures worker → Brevo /v3/smtp/email (SEND). Brevo's transactional API returns 201 the instant it accepts the POST, so a degraded send path (auth failure, rate limit, network) NEVER affects the delivery-ratio alert — the messages simply never queue at Brevo. The classification label separates fixable-by-key-rotation (permanent: 401/403) from fixable-by-backoff (transient: 5xx, 429) so the operator knows which runbook to follow. Source: worker/internal/metrics/metrics.go (BrevoSendErrorsTotal), emit site worker/internal/email/brevo/brevo.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(brevo_send_errors_total) FROM Metric WHERE metricName = 'brevo_send_errors_total' FACET classification, status_code"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 10,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 3,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

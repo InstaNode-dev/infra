@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — migration_status != ok on /healthz (worker reading a DB it didn't fully migrate against)",
+  "type": "NRQL",
+  "description": "P1 page. The worker's /healthz endpoint emits `migration_version`, `migration_count`, and `migration_status` fields read live from the shared platform DB's schema_migrations table (see worker/internal/migrations/state.go, added in BugBash 2026-05-20 B14-F9). The api emits the same three fields. This alert fires when the worker's /healthz reports migration_status != 'ok' for >5 min — most often that means the api shipped a migration that the worker pod hasn't reloaded yet, OR the platform DB is on an unknown migration version that doesn't match either pod's bundled schema. The contract: api+worker MUST agree on the same migration_count, because both read the same tables. Runbook: `kubectl exec -n instant-infra deploy/instant-worker -- wget -qO- localhost:8091/healthz | jq` to see the actual fields, then `kubectl exec -n instant deploy/instant-api -- wget -qO- localhost:8080/healthz | jq` to compare. Restart the lagging pod (or roll forward if it's the older bundled schema). Source: worker/main.go /healthz handler.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'worker' AND message LIKE '%migration_status%' AND message NOT LIKE '%migration_status\":\"ok%'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
