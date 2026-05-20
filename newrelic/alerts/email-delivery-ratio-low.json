@@ -1,0 +1,37 @@
+{
+  "name": "Email delivery ratio < 95% (1h)",
+  "type": "NRQL",
+  "description": "The receiver-side counter brevo_webhook_events_total{event=\"delivered\"} / brevo_webhook_events_total over a 1h window. Closes the '201 ≠ delivered' gap — Brevo's transactional API returns 201 the instant it accepts the POST, but the actual SMTP relay happens async. This alert fires when the proportion of POSTs that Brevo's webhook later confirmed as 'delivered' drops below 95%. Common causes: sender domain dropped from validated list (the 2026-05-20 launch incident), DKIM record stale, IP on a blocklist, or a broad bounce/rejected event class spiking. The receiver path is api/internal/handlers/brevo_webhook.go; the metric is registered in api/internal/metrics/metrics.go. Cardinality is bounded (closed set of event labels).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT percentage(sum(brevo_webhook_events_total), WHERE event = 'delivered') FROM Metric WHERE event IN ('delivered', 'bounced_hard', 'bounced_soft', 'rejected', 'complaint', 'deferred', 'unsubscribed', 'error')"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "BELOW",
+      "threshold": 95.0,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "BELOW",
+      "threshold": 98.0,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

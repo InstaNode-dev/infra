@@ -95,6 +95,17 @@ spec:
                 secretKeyRef:
                   name: instant-secrets
                   key: RAZORPAY_WEBHOOK_SECRET
+            # BREVO_WEBHOOK_SECRET — URL-token for the transactional-
+            # delivery receiver at POST /webhooks/brevo/:secret +
+            # HMAC key for the legacy /api/v1/email/webhook/brevo path.
+            # See api/internal/handlers/brevo_webhook.go for the full
+            # rationale ("201 ≠ delivered" gap closure).
+            - name: BREVO_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: BREVO_WEBHOOK_SECRET
+                  optional: true
             - name: RAZORPAY_PLAN_ID_HOBBY
               valueFrom:
                 secretKeyRef:

@@ -1,0 +1,101 @@
+{
+  "name": "Email delivery (Brevo)",
+  "description": "Closes the '201 ≠ delivered' gap. Brevo's transactional API returns 201 the instant it accepts the POST; the actual SMTP relay happens async. This dashboard surfaces the RECEIVER-side ledger updates (api /webhooks/brevo/:secret) so the team sees what Brevo's relay actually did, not what the API said it would do. Source: brevo_webhook_events_total Prometheus counter + forwarder_sent rows via NRQL log queries.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Delivery",
+      "description": "Live delivery ratio + per-event-class breakdown",
+      "widgets": [
+        {
+          "title": "Delivery ratio (delivered / all-terminal events)",
+          "layout": { "column": 1, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT percentage(sum(brevo_webhook_events_total), WHERE event = 'delivered') AS 'delivered %' FROM Metric WHERE event IN ('delivered', 'bounced_hard', 'bounced_soft', 'rejected', 'complaint', 'deferred', 'unsubscribed', 'error') SINCE 1 hour ago"
+              }
+            ],
+            "thresholds": [
+              { "value": 95, "alertSeverity": "CRITICAL" },
+              { "value": 98, "alertSeverity": "WARNING" }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Events received by class (1h)",
+          "layout": { "column": 5, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.pie" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(brevo_webhook_events_total) FROM Metric FACET event SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Delivery ratio over time",
+          "layout": { "column": 9, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT percentage(sum(brevo_webhook_events_total), WHERE event = 'delivered') AS 'delivered %' FROM Metric WHERE event IN ('delivered', 'bounced_hard', 'bounced_soft', 'rejected', 'complaint', 'deferred', 'unsubscribed', 'error') TIMESERIES AUTO"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Per-class event rate over time",
+          "layout": { "column": 1, "row": 4, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT rate(sum(brevo_webhook_events_total), 5 minutes) FROM Metric WHERE event IN ('delivered', 'bounced_hard', 'bounced_soft', 'rejected', 'complaint', 'deferred', 'unsubscribed', 'error', 'unhandled') FACET event TIMESERIES AUTO"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Receiver-side rejection paths (auth + payload)",
+          "layout": { "column": 1, "row": 7, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT rate(sum(brevo_webhook_events_total), 5 minutes) FROM Metric WHERE event IN ('unauthorized', 'invalid_payload', 'oversized', 'missing_message_id') FACET event TIMESERIES AUTO"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Send-vs-deliver (worker INFO logs vs receiver INFO logs)",
+          "layout": { "column": 7, "row": 7, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE message IN ('email.brevo.event_sent', 'webhook.brevo.delivered') FACET message TIMESERIES AUTO"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        }
+      ]
+    }
+  ]
+}
