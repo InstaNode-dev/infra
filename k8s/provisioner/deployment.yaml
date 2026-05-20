@@ -36,20 +36,30 @@ spec:
                   matchLabels:
                     app: instant-provisioner
                 topologyKey: kubernetes.io/hostname
-      initContainers:
-        - name: wait-for-provisioner-db
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - >-
-              until nc -z
-              postgres-provisioner.instant-infra.svc.cluster.local 5432;
-              do echo "waiting for provisioner db..."; sleep 2; done
+      # imagePullSecrets — required to pull the prod image from GHCR org
+      # `instanode-dev`. Codified 2026-05-20 after a near-miss where a
+      # `kubectl apply -f provisioner/deployment.yaml` would have stripped
+      # them and left every new pod in ImagePullBackOff. See APPLY-CHECKLIST.md.
+      imagePullSecrets:
+        - name: ghcr-pull
+        - name: ghcr-regrade
+      # terminationGracePeriodSeconds — default 30s. Codified so a future
+      # bump doesn't silently shrink the budget.
+      terminationGracePeriodSeconds: 30
+      # NOTE — wait-for-provisioner-db initContainer intentionally absent.
+      # Prod runs against DigitalOcean Managed Postgres (the
+      # postgres-provisioner Service does not exist in `instant-infra`),
+      # and PROVISIONER_DATABASE_URL is the actual source-of-truth env var.
+      # For local dev that does run an in-cluster postgres-provisioner pod,
+      # use the local-dev overlay alongside this file. See APPLY-CHECKLIST.md.
       containers:
         - name: provisioner
-          image: instant-provisioner:local
-          imagePullPolicy: Never
+          # Placeholder image — the auto-deploy CI (provisioner repo's
+          # .github/workflows/deploy.yml) overrides this via
+          # `kubectl set image deploy/instant-provisioner provisioner=ghcr.io/instanode-dev/instant-provisioner:master-<sha>`
+          # on every push to master. See APPLY-CHECKLIST.md.
+          image: ghcr.io/instanode-dev/instant-provisioner:placeholder
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 50051
               name: grpc
@@ -84,12 +94,26 @@ spec:
               value: "dev"
             - name: PROVISIONER_PORT
               value: "50051"
+            # Backend selection — prod runs the k8s backend for postgres +
+            # redis (each tenant gets a dedicated pod via the provisioner's
+            # k8s.Client). Local dev (Rancher Desktop) overrides these to
+            # "local" via a kustomize overlay. Defaulting to "k8s" here so
+            # `kubectl apply` doesn't silently downgrade prod's backend
+            # selection.
             - name: POSTGRES_PROVISION_BACKEND
-              value: "local"
+              value: "k8s"
+            # POSTGRES_CUSTOMERS_URL is the admin URL the provisioner uses
+            # to CREATE/DROP customer databases on shared Postgres. The real
+            # password lives in instant-infra-secrets — sourcing it here so
+            # this manifest never carries the production password.
             - name: POSTGRES_CUSTOMERS_URL
-              value: "postgres://instant_cust:instant_cust@postgres-customers.instant-data.svc.cluster.local:5432/instant_customers?sslmode=disable"
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: POSTGRES_CUSTOMERS_URL
+                  optional: true
             - name: REDIS_PROVISION_BACKEND
-              value: "local"
+              value: "k8s"
             - name: REDIS_PROVISION_HOST
               value: "redis-provision.instant-data.svc.cluster.local:6379"
             - name: MONGO_ADMIN_URI
@@ -142,10 +166,17 @@ spec:
             # See docs/ops-k8s-dedicated.md for the full EKS deployment guide.
             - name: K8S_DEDICATED_BACKEND
               value: "true"
+            # K8S_EXTERNAL_HOST is the public-DNS host the provisioner stamps
+            # into customer connection URLs that get routed in via TCP-router
+            # (pg.instanode.dev → ingress-nginx tcp-services-configmap →
+            # tenant Service). For local dev, override to 127.0.0.1 via an
+            # overlay (Rancher Desktop NodePorts).
             - name: K8S_EXTERNAL_HOST
-              value: "127.0.0.1"    # Rancher Desktop: NodePorts accessible on localhost
+              value: "pg.instanode.dev"
+            # K8S_STORAGE_CLASS — prod uses DigitalOcean block storage. Local
+            # dev (Rancher Desktop) uses "local-path" via an overlay.
             - name: K8S_STORAGE_CLASS
-              value: "local-path"   # Rancher Desktop default; use "gp3" on EKS
+              value: "do-block-storage"
             - name: K8S_POSTGRES_IMAGE
               value: "pgvector/pgvector:pg16"  # includes pgvector so pg_restore can restore vector extension
             - name: K8S_REDIS_IMAGE
@@ -177,6 +208,52 @@ spec:
                 secretKeyRef:
                   name: minio-secrets
                   key: MINIO_ROOT_PASSWORD
+            # ── OTLP headers (NR license key) — CODIFIED INTENT ───────────────
+            # The live deployment has this as an inline `value:` literal (NR
+            # license key embedded). Codified intent is to pull from
+            # instant-infra-secrets. Until an operator runs the one-time
+            # reconciliation (remove the live inline-value entry first), this
+            # stays commented out — see APPLY-CHECKLIST.md for the procedure.
+            #
+            # - name: OTEL_EXPORTER_OTLP_HEADERS
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: instant-infra-secrets
+            #       key: OTEL_EXPORTER_OTLP_HEADERS
+            #       optional: true
+            # ── Mongo / Queue backend selection (prod uses k8s) ───────────────
+            # Defaults flip from `local` to `k8s` in prod via these env vars.
+            # Without them the provisioner would treat prod as a local
+            # cluster and call pure-Go local backends instead of k8s. The
+            # POSTGRES_PROVISION_BACKEND + REDIS_PROVISION_BACKEND defaults
+            # ABOVE are still "local"; in prod the auto-deploy or
+            # post-apply patch overrides them — codifying the prod intent
+            # here so the gap is documented, but the patch from the live
+            # source is owned by an operator decision (see APPLY-CHECKLIST.md).
+            - name: MONGO_PROVISION_BACKEND
+              value: "k8s"
+            - name: QUEUE_PROVISION_BACKEND
+              value: "k8s"
+            # ── Public hostnames for issued connection URLs ───────────────────
+            # The provisioner builds the host portion of `connection_url` for
+            # customer-facing tokens from these. In local dev they default to
+            # 127.0.0.1; in prod they MUST point at the public TCP-router DNS
+            # (pg.instanode.dev / redis.instanode.dev / mongo.instanode.dev).
+            # Codifying as env defaults so a fresh deploy still issues URLs
+            # the customer can reach.
+            - name: POSTGRES_PUBLIC_HOST
+              value: "pg.instanode.dev"
+            - name: POSTGRES_PUBLIC_PORT
+              value: "5432"
+            - name: REDIS_PUBLIC_HOST
+              value: "redis.instanode.dev"
+            - name: REDIS_PUBLIC_PORT
+              value: "6379"
+            - name: K8S_MONGO_PUBLIC_HOST
+              value: "mongo.instanode.dev"
+            # ── Shared-cluster Redis URL the provisioner injects into routes ──
+            - name: REDIS_URL_FOR_ROUTES
+              value: "redis://redis.instant.svc.cluster.local:6379"
           # Probes (2026-05-18): the provisioner's /healthz sidecar on port
           # 8092 registers ONLY /healthz — it never serves /livez. All three
           # probes hit /healthz (checks DB + pool init). The generous

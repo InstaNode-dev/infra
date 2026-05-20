@@ -44,10 +44,38 @@ spec:
                   matchLabels:
                     app: instant-worker
                 topologyKey: kubernetes.io/hostname
+      # imagePullSecrets — required to pull the prod image from GHCR org
+      # `instanode-dev`. Codified 2026-05-20 after a near-miss where a
+      # `kubectl apply -f worker/deployment.yaml` would have stripped them
+      # and left every new pod in ImagePullBackOff. See APPLY-CHECKLIST.md.
+      imagePullSecrets:
+        - name: ghcr-pull
+        - name: ghcr-regrade
+      # terminationGracePeriodSeconds — the worker drains in-flight River
+      # jobs in Workers.Stop (drain-before-cancel, MR-P0-2/P1-3). 30s is
+      # the k8s default; codifying it here so a future kustomize bump
+      # doesn't silently shrink the budget.
+      terminationGracePeriodSeconds: 30
+      # Volumes — the worker reads plans.yaml from disk so it sees the
+      # same tier definitions the api does (mounted via instant-plans
+      # ConfigMap). Without this mount the worker falls back to
+      # defaultYAML in common/plans, which can drift from the api.
+      volumes:
+        - name: plans
+          configMap:
+            name: instant-plans
       containers:
         - name: worker
-          image: instant-worker:local
-          imagePullPolicy: Never
+          # Placeholder image — the auto-deploy CI (worker repo's
+          # .github/workflows/deploy.yml) overrides this via
+          # `kubectl set image deploy/instant-worker worker=ghcr.io/instanode-dev/instant-worker:master-<sha>`
+          # on every push to master. See APPLY-CHECKLIST.md.
+          image: ghcr.io/instanode-dev/instant-worker:placeholder
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: plans
+              mountPath: /app/plans.yaml
+              subPath: plans.yaml
           ports:
             # 8091 serves both /healthz (probes) and /metrics (Prometheus
             # scrape). Named 'metrics' so the instant-worker Service below
@@ -86,6 +114,15 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          # envFrom — pull every key in instant-infra-secrets as an env var.
+          # The named `env:` block below then overrides specific keys with
+          # explicit `valueFrom`/`value` entries when we want to be explicit
+          # or set a non-secret default. Marked optional so the worker can
+          # boot in a fresh cluster before the secret exists.
+          envFrom:
+            - secretRef:
+                name: instant-infra-secrets
+                optional: true
           env:
             # ── Observability (track 6 of 8) ──────────────────────────────────
             # NEW_RELIC_LICENSE_KEY pulled from instant-infra-secrets. When
@@ -161,6 +198,106 @@ spec:
               value: "noreply@instanode.dev"
             - name: BREVO_SENDER_NAME
               value: "instanode"
+            # ── Worker postgres pool — keep small so River doesn't starve api ─
+            - name: WORKER_PG_MAX_OPEN_CONNS
+              value: "3"
+            - name: WORKER_PG_MAX_IDLE_CONNS
+              value: "1"
+            # ── Email provider routing ───────────────────────────────────────
+            - name: EMAIL_PROVIDER
+              value: "brevo"
+            # ── Internal API URL for worker→api callbacks ────────────────────
+            - name: INSTANT_API_INTERNAL_URL
+              value: "http://instant-api.instant.svc.cluster.local:8080"
+            # ── Plans file path (mounted from instant-plans ConfigMap) ───────
+            - name: PLANS_PATH
+              value: "/app/plans.yaml"
+            # ── OTLP headers, customer-data URLs — CODIFIED INTENT ────────────
+            # The live deployment has these as inline `value:` literals (with
+            # embedded passwords/license keys). The codified intent is to
+            # pull from instant-infra-secrets. Until an operator runs the
+            # one-time reconciliation:
+            #
+            #   kubectl patch deploy/instant-worker -n instant-infra --type=json \
+            #     -p='[{"op":"remove","path":"/spec/template/spec/containers/0/env/<INDEX_OF_EACH>"}]'
+            #
+            # ...these entries stay commented out — uncommenting them and
+            # applying would fail at the API-server validation gate
+            # ("valueFrom may not be specified when value is not empty").
+            # See APPLY-CHECKLIST.md.
+            #
+            # - name: OTEL_EXPORTER_OTLP_HEADERS
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: instant-infra-secrets
+            #       key: OTEL_EXPORTER_OTLP_HEADERS
+            #       optional: true
+            # - name: CUSTOMER_DATABASE_URL
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: instant-infra-secrets
+            #       key: CUSTOMER_DATABASE_URL
+            #       optional: true
+            # - name: CUSTOMER_REDIS_URL
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: instant-infra-secrets
+            #       key: CUSTOMER_REDIS_URL
+            #       optional: true
+            # - name: MONGO_ADMIN_URI
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: instant-infra-secrets
+            #       key: MONGO_ADMIN_URI
+            #       optional: true
+            # ── Razorpay (worker-side cancellation/reconciliation paths) ─────
+            # Worker reads from instant-secrets (instant namespace) — not
+            # instant-infra-secrets — because the source of truth for live
+            # Razorpay keys is the api's secret. RBAC for cross-namespace
+            # secret reads is granted by infra/k8s/worker-rbac.yaml.
+            - name: RAZORPAY_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: RAZORPAY_KEY_ID
+                  optional: true
+            - name: RAZORPAY_KEY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: RAZORPAY_KEY_SECRET
+                  optional: true
+            # ── Object-store backend (storage abstraction, 2026-05-20) ───────
+            - name: OBJECT_STORE_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_ENDPOINT
+                  optional: true
+            - name: OBJECT_STORE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_ACCESS_KEY
+                  optional: true
+            - name: OBJECT_STORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_SECRET_KEY
+                  optional: true
+            - name: OBJECT_STORE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_BUCKET
+                  optional: true
+            - name: OBJECT_STORE_SECURE
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_SECURE
+                  optional: true
 ---
 # Headless ClusterIP Service for the worker (P1-W5-08 / T13-S5-05). The worker
 # is a background-job processor with no inbound API traffic, but it serves

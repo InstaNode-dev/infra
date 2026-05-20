@@ -52,20 +52,34 @@ spec:
                   matchLabels:
                     app: instant-api
                 topologyKey: kubernetes.io/hostname
-      initContainers:
-        # Wait for platform DB to be ready before starting the API
-        - name: wait-for-platform-db
-          image: postgres:16-alpine
-          command:
-            - sh
-            - -c
-            - |
-              until pg_isready -h postgres-platform -U instant -d instant_platform; do
-                echo "Waiting for platform DB..."; sleep 2
-              done
+      # imagePullSecrets — required to pull the prod image from GHCR org
+      # `instanode-dev`. Removing either of these will leave new pods stuck
+      # in ImagePullBackOff after the next rollout. The auto-deploy CI sets
+      # the image tag via `kubectl set image` but does NOT (and cannot)
+      # repair imagePullSecrets if they get stripped by a naive
+      # `kubectl apply -f app.yaml` — see APPLY-CHECKLIST.md.
+      imagePullSecrets:
+        - name: ghcr-pull
+        - name: ghcr-org-pull
+      # NOTE — wait-for-platform-db initContainer intentionally absent.
+      # Prod runs against DigitalOcean Managed Postgres (no in-cluster
+      # `postgres-platform` Service); the init container would block
+      # pod startup forever. For local dev (Rancher Desktop / k3s with
+      # an in-cluster postgres-platform Service), use the
+      # `local-dev-overlay.yaml` overlay alongside this file. See
+      # APPLY-CHECKLIST.md.
       containers:
         - name: api
-          image: instant-api:local   # built with: docker build -t instant-api:local .
+          # Placeholder image — the auto-deploy CI (api repo's
+          # .github/workflows/deploy.yml) overrides this via
+          # `kubectl set image deploy/instant-api api=ghcr.io/instanode-dev/instant-api:master-<sha>`
+          # on every push to master. The value below is a fallback that
+          # documents intent + lets `kubectl apply --dry-run` succeed; the
+          # tag `placeholder` will fail to pull if a literal apply ever
+          # reaches the cluster, which is the LOUD failure we want over
+          # a SILENT regression to `instant-api:local`. Per CLAUDE.md
+          # rule 15, this repo has no auto-apply by design.
+          image: ghcr.io/instanode-dev/instant-api:placeholder   # see APPLY-CHECKLIST.md
           # preStop — sleep 5s before SIGTERM is delivered so the kubelet
           # has a tick to observe the readinessProbe failure (the api
           # flips inside runServerWithGracefulShutdown via
@@ -192,6 +206,112 @@ spec:
                   name: instant-secrets
                   key: MINIO_ROOT_PASSWORD
                   optional: true
+            # ── Razorpay annual plan IDs (codified 2026-05-20) ────────────────
+            # Live since the annual-pricing toggle shipped. Required for any
+            # *_yearly plan checkout to succeed. NOT optional in prod, but
+            # marked so to let the api boot in a fresh cluster before secrets
+            # are populated.
+            - name: RAZORPAY_PLAN_ID_HOBBY_YEARLY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: RAZORPAY_PLAN_ID_HOBBY_YEARLY
+                  optional: true
+            - name: RAZORPAY_PLAN_ID_PRO_YEARLY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: RAZORPAY_PLAN_ID_PRO_YEARLY
+                  optional: true
+            # ── Deploy backend (the /deploy/new wedge) ────────────────────────
+            # BUILD_IMAGE_REGISTRY is where Kaniko pushes the built customer
+            # image; DEPLOY_DOMAIN is the apex DNS for *.deployment.<>;
+            # CERT_ISSUER is the cert-manager ClusterIssuer that mints TLS
+            # certs for each deployed app's ingress.
+            - name: BUILD_IMAGE_REGISTRY
+              value: "ghcr.io/REDACTED/instant-userapp"
+            - name: DEPLOY_DOMAIN
+              value: "deployment.instanode.dev"
+            - name: CERT_ISSUER
+              value: "letsencrypt-http01"
+            # E2E_TEST_TOKEN — used by the e2e/staging contract tests
+            # (`/api/v1/admin/e2e/*` routes) to bypass anonymous quotas. Marked
+            # optional so a missing key doesn't keep the api from booting in a
+            # fresh cluster.
+            - name: E2E_TEST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: E2E_TEST_TOKEN
+                  optional: true
+            # ── OAuth client IDs (PUBLIC — id, not the secret) ───────────────
+            # The GITHUB_CLIENT_SECRET / GOOGLE_CLIENT_SECRET above are the
+            # private halves; these are the public client IDs the frontend
+            # uses to construct the OAuth-redirect URL.
+            - name: GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: GITHUB_CLIENT_ID
+                  optional: true
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: GOOGLE_CLIENT_ID
+                  optional: true
+            # ── Object-store backend (storage abstraction, 2026-05-20) ────────
+            # OBJECT_STORE_BACKEND selects the impl: do-spaces (prod today),
+            # r2, s3, or minio. The rest are backend-specific. See
+            # common/storageprovider/factory.go.
+            - name: OBJECT_STORE_BACKEND
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: OBJECT_STORE_BACKEND
+                  optional: true
+            - name: OBJECT_STORE_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: OBJECT_STORE_ENDPOINT
+                  optional: true
+            - name: OBJECT_STORE_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: OBJECT_STORE_REGION
+                  optional: true
+            - name: OBJECT_STORE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: OBJECT_STORE_ACCESS_KEY
+                  optional: true
+            - name: OBJECT_STORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: OBJECT_STORE_SECRET_KEY
+                  optional: true
+            - name: OBJECT_STORE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: OBJECT_STORE_BUCKET
+                  optional: true
+            - name: OBJECT_STORE_SECURE
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: OBJECT_STORE_SECURE
+                  optional: true
+            - name: OBJECT_STORE_PUBLIC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: instant-secrets
+                  key: OBJECT_STORE_PUBLIC_URL
+                  optional: true
             # ── Platform admin gates ─────────────────────────────────────────
             # Two independent gates protect /api/v1/<prefix>/customers/...:
             #
@@ -235,6 +355,36 @@ spec:
             # https://otlp.eu01.nr-data.net:4317 for EU accounts.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "https://otlp.nr-data.net:4317"
+            # OTEL_EXPORTER_OTLP_HEADERS — the `api-key=<NR-license-key>` pair
+            # the OTLP exporter sends to New Relic. Patched into the live
+            # deployment on 2026-05-12 (B3 incident) so distributed tracing
+            # works.
+            #
+            # CODIFIED INTENT: pull from secret (never commit the literal
+            # license key). LIVE STATE: hardcoded as an inline `value:`
+            # (history from the original kubectl patch).
+            #
+            # Reconciling these two requires the live deployment to FIRST be
+            # patched to remove its inline value (so the strategic-merge
+            # apply doesn't try to set both `value` and `valueFrom`):
+            #
+            #   kubectl get secret instant-secrets -n instant -o json \
+            #     | jq -r '.data.OTEL_EXPORTER_OTLP_HEADERS' \
+            #     | base64 -d  # confirm secret holds the right value first
+            #   kubectl patch deploy/instant-api -n instant --type=json \
+            #     -p='[{"op":"remove","path":"/spec/template/spec/containers/0/env/<INDEX>"}]'
+            #   # then `kubectl apply -f app.yaml` will re-add via secretKeyRef
+            #
+            # Until that one-time reconciliation runs, this entry stays
+            # COMMENTED OUT — the dry-run conflict it produces is real and
+            # documents this remaining drift. See APPLY-CHECKLIST.md.
+            #
+            # - name: OTEL_EXPORTER_OTLP_HEADERS
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: instant-secrets
+            #       key: OTEL_EXPORTER_OTLP_HEADERS
+            #       optional: true
             # VERSION is read by buildinfo at runtime (overrides the -ldflags
             # value baked at build time). Operators bump this per release;
             # alternatively, leave empty and rely on the image tag baked in
