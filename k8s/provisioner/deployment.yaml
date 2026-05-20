@@ -201,21 +201,55 @@ spec:
               value: "1"
             - name: K8S_MONGO_STORAGE_GI
               value: "1"
-            # ── MinIO storage bytes queries ───────────────────────────────────
-            - name: MINIO_ENDPOINT
-              value: "minio.instant-data.svc.cluster.local:9000"
-            - name: MINIO_BUCKET_NAME
-              value: "instant-shared"
-            - name: MINIO_ROOT_USER
+            # ── Object-storage bytes queries ──────────────────────────────────
+            # Migrated 2026-05-20 from MINIO_* to OBJECT_STORE_* as part of
+            # chore/retire-self-hosted-minio-2026-05-20 (supersedes PR #4).
+            # Self-hosted MinIO retired; DO Spaces is the canonical backend.
+            # Also removes a previously dangling reference to a `minio-secrets`
+            # Secret in the instant-infra namespace that was never defined in
+            # the tree (the in-repo Secret lived in instant-data).
+            - name: OBJECT_STORE_BACKEND
               valueFrom:
                 secretKeyRef:
-                  name: minio-secrets
-                  key: MINIO_ROOT_USER
-            - name: MINIO_ROOT_PASSWORD
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_BACKEND
+                  optional: true
+            - name: OBJECT_STORE_ENDPOINT
               valueFrom:
                 secretKeyRef:
-                  name: minio-secrets
-                  key: MINIO_ROOT_PASSWORD
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_ENDPOINT
+                  optional: true
+            - name: OBJECT_STORE_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_REGION
+                  optional: true
+            - name: OBJECT_STORE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_ACCESS_KEY
+                  optional: true
+            - name: OBJECT_STORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_SECRET_KEY
+                  optional: true
+            - name: OBJECT_STORE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_BUCKET
+                  optional: true
+            - name: OBJECT_STORE_SECURE
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_SECURE
+                  optional: true
             # ── OTLP headers (NR license key) — CODIFIED INTENT ───────────────
             # The live deployment has this as an inline `value:` literal (NR
             # license key embedded). Codified intent is to pull from

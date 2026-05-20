@@ -170,6 +170,57 @@ of silently regressing.
 
 ---
 
+## MinIO retirement (2026-05-20)
+
+The self-hosted MinIO Deployment in `instant-data` was retired in
+`chore/retire-self-hosted-minio-2026-05-20` (supersedes the stale PR #4
+from 2026-05-11). DO Spaces (`nyc3.digitaloceanspaces.com`, bucket
+`instant-shared`) is the canonical production object-store backend, selected
+by `OBJECT_STORE_BACKEND=do-spaces` in `instant-secrets` (and mirrored to
+`instant-infra-secrets` for worker + provisioner storage_bytes scanners).
+
+After this PR merges, run the following on the prod cluster (and on any
+local Rancher Desktop clusters that still have the legacy MinIO workload
+deployed):
+
+```bash
+# 1. Confirm context (do NOT run against the wrong cluster)
+kubectl config current-context
+
+# 2. Inventory what's actually there before deleting anything
+kubectl get deploy,pvc,svc,job,secret -n instant-data -l app=minio
+kubectl get secret -n instant-data minio-secrets 2>/dev/null || echo "no minio-secrets"
+
+# 3. Remove the MinIO workload + storage + services + bootstrap Job + Secret
+kubectl delete -n instant-data deploy/minio --ignore-not-found
+kubectl delete -n instant-data pvc/minio-data --ignore-not-found
+kubectl delete -n instant-data svc/minio svc/minio-external --ignore-not-found
+kubectl delete -n instant-data job/minio-bucket-init --ignore-not-found
+kubectl delete -n instant-data secret/minio-secrets --ignore-not-found
+
+# 4. Verify nothing left
+kubectl get pods -n instant-data | grep -i minio   # should print nothing
+
+# 5. (Optional) If the legacy `s3.instanode.dev` Ingress still points at
+#    the minio Service, delete or repoint it to DO Spaces. The Ingress
+#    object was untracked in this repo — confirm what's live:
+kubectl get ingress -A | grep -i minio
+
+# 6. Sanity-check the storage hot path is unaffected
+curl -sS https://api.instanode.dev/healthz | jq .
+# /storage/new responses should reference *.digitaloceanspaces.com,
+# not minio.instant-data.svc.cluster.local.
+```
+
+Rollback: revert the merge commit on master, re-apply the deleted
+manifests from history (`git show <revert-sha>~1 -- k8s/data/minio*.yaml |
+kubectl apply -f -`), and flip `OBJECT_STORE_BACKEND` back to `minio` in
+`instant-secrets`. Storage data isn't lost in either direction — the PVC
+was on local-path in Rancher Desktop only; DO Spaces holds the real
+production object bytes.
+
+---
+
 ## Related files
 
 - `README.md` — secrets clobber warning (the same class of bug, but for

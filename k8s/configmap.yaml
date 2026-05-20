@@ -36,8 +36,9 @@ data:
   COMPUTE_PROVIDER: "k8s"
   STACK_EXPOSE_VIA: "nodeport"
   KUBE_NAMESPACE_APPS: "instant-apps"
-  MINIO_ENDPOINT: "minio.instant-data.svc.cluster.local:9000"
-  MINIO_BUCKET_NAME: "instant-shared"
+  # MINIO_ENDPOINT / MINIO_BUCKET_NAME retired 2026-05-20 (self-hosted MinIO
+  # retirement). Object storage now lives behind OBJECT_STORE_* in
+  # instant-secrets (DO Spaces, nyc3, bucket instant-shared).
   # Deploy / stack ingress wiring. DEPLOY_DOMAIN is the wildcard zone the
   # api builds per-deploy hostnames under (<id>.deployment.instanode.dev);
   # without it the code falls back to the hardcoded default "instant.dev".
