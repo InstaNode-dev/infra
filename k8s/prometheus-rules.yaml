@@ -173,3 +173,48 @@ spec:
           annotations:
             summary: "Backup Job {{ $labels.cronjob }} most recent run is in Failed state"
             description: "kube_job_status_failed > 0 for backup Job in instant-data. Pull pod logs and re-run manually if needed: see infra/BACKUP-RESTORE-RUNBOOK.md."
+
+    # instant-worker — propagation_runner dead-letter alerts (CHAOS F3, 2026-05-20).
+    # Fires on the worker's instant_propagation_dead_lettered_total counter
+    # (introduced in worker repo, see metrics.go::PropagationDeadLetteredTotal).
+    # Three triggers feed this metric — labelled by `reason`:
+    #   reason="max_attempts" — propagationMaxAttempts (10) of exponential
+    #                           backoff retries exhausted (the modal real-failure
+    #                           path: provisioner gRPC down, F1's
+    #                           unexpected_skip-as-failure, markApplied DB blip).
+    #   reason="unknown_kind" — CHAOS F2: old worker image saw a kind the api
+    #                           started enqueuing in a newer release.
+    # Both mean a paying customer's regrade fell through. The companion NR
+    # log-based alert (newrelic/alerts/propagation-dead-lettered.json) keys on
+    # the slog ERROR line; this Prom rule keys on the counter for the case
+    # where NR Log ingest is brown-outed but Prometheus is still scraping.
+    - name: instant-worker
+      rules:
+        - alert: PropagationDeadLettered
+          expr: |
+            sum(rate(instant_propagation_dead_lettered_total[5m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "instant-worker propagation_runner dead-lettered a row in the last 5m (Pro-on-paper, hobby-grade infra)"
+            description: "instant_propagation_dead_lettered_total > 0 for >5m. propagation_runner is the last line of defence between Razorpay webhook delivery and customer infra; any dead-letter means a paying customer's regrade fell through. Inspect pending_propagations.last_error + the team's resources, fix the underlying issue, then either DELETE the row to let entitlement_reconciler converge OR reset failed_at=NULL+attempts=0 to re-arm the runner. See CHAOS-DRILL-2026-05-20.md F1/F2/F3."
+
+        # Per-tick image-skew leading indicator: PropagationUnknownKindTotal
+        # fires on EVERY tick while an unknown-kind row is alive (not just
+        # at the eventual dead-letter, which is ~24h away on the default
+        # backoff). Lets the operator catch a half-rolled-out worker pod
+        # within seconds rather than waiting the full backoff exhaustion.
+        # Lower-severity than PropagationDeadLettered — the fix here is to
+        # finish the rollout, NOT to wake on-call.
+        - alert: PropagationUnknownKind
+          expr: |
+            sum by (kind) (rate(instant_propagation_unknown_kind_total[5m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: worker
+          annotations:
+            summary: "instant-worker saw a pending_propagations kind it doesn't recognise (kind={{ $labels.kind }})"
+            description: "instant_propagation_unknown_kind_total{kind=\"{{ $labels.kind }}\"} > 0 for >5m. A worker pod is running an older image than the api enqueued (kind={{ $labels.kind }} is not in propagationHandlers). Finish the rollout — `kubectl rollout status deploy/instant-worker -n instant-infra` and confirm pods are on the same image as instant-api. The row will dead-letter after propagationMaxAttempts (10) attempts (~24h cumulative backoff) which will fire PropagationDeadLettered above; this is the early warning."
