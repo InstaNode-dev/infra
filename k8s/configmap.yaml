@@ -5,7 +5,21 @@ metadata:
   namespace: instant
 data:
   PORT: "8080"
-  # OpenTelemetry OTLP gRPC (host:port, no scheme). Empty = tracing disabled (noop).
+  # OpenTelemetry OTLP gRPC endpoint. Accepts either a bare `host:port` or
+  # a full `https://host:port` / `http://host:port` URL — the InitTracer
+  # helper strips the scheme and uses it to auto-select TLS vs plaintext.
+  # Empty = tracing disabled (noop). In prod each Deployment overrides this
+  # via its own `env:` entry to "https://otlp.nr-data.net:4317" (US) or
+  # "https://otlp.eu01.nr-data.net:4317" (EU). NR ingest also requires
+  # NEW_RELIC_LICENSE_KEY to be set in instant-secrets / instant-infra-
+  # secrets; without it InitTracer logs telemetry.nr_license_missing WARN
+  # and exports will be rejected by NR.
+  #
+  # 2026-05-20 P0-2: prior tracer.go used WithInsecure() against the TLS
+  # endpoint with no api-key header — every export failed silently and
+  # trace_id was empty on every log line. The TLS-by-scheme + api-key
+  # header pair in tracer.go is the fix; the configmap behaviour did NOT
+  # change.
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
   OTEL_SERVICE_NAME: "instant-api"
   ENVIRONMENT: development
