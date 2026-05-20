@@ -165,28 +165,58 @@ spec:
               value: production
             - name: KUBE_NAMESPACE_APPS
               value: "instant-apps"
-            # MinIO storage_bytes scanner — added 2026-05-11 in worker
-            # PR #4. The scanner walks every storage resource's bucket
-            # once per scan interval, sums object sizes, and updates
-            # resources.storage_bytes in the platform Postgres. When
-            # MINIO_ENDPOINT is empty (e.g., in CI), the scanner runs
-            # as a fail-open no-op and emits a single warn-log line
-            # per storage resource per interval.
-            - name: MINIO_ENDPOINT
-              value: "minio.instant-data.svc.cluster.local:9000"
-            - name: MINIO_BUCKET_NAME
-              value: "instant-shared"
-            - name: MINIO_ROOT_USER
+            # Object-storage storage_bytes scanner. The scanner walks every
+            # storage resource's bucket once per scan interval, sums object
+            # sizes, and updates resources.storage_bytes in the platform
+            # Postgres. Backend is selected by OBJECT_STORE_BACKEND (today:
+            # do-spaces against nyc3.digitaloceanspaces.com, bucket
+            # instant-shared). When OBJECT_STORE_ENDPOINT is empty (e.g., in
+            # CI), the scanner runs as a fail-open no-op and emits a single
+            # warn-log line per storage resource per interval.
+            #
+            # Migrated 2026-05-20 from MINIO_* to OBJECT_STORE_* as part of
+            # chore/retire-self-hosted-minio-2026-05-20 (supersedes PR #4).
+            - name: OBJECT_STORE_BACKEND
               valueFrom:
                 secretKeyRef:
                   name: instant-infra-secrets
-                  key: MINIO_ROOT_USER
+                  key: OBJECT_STORE_BACKEND
                   optional: true
-            - name: MINIO_ROOT_PASSWORD
+            - name: OBJECT_STORE_ENDPOINT
               valueFrom:
                 secretKeyRef:
                   name: instant-infra-secrets
-                  key: MINIO_ROOT_PASSWORD
+                  key: OBJECT_STORE_ENDPOINT
+                  optional: true
+            - name: OBJECT_STORE_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_REGION
+                  optional: true
+            - name: OBJECT_STORE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_ACCESS_KEY
+                  optional: true
+            - name: OBJECT_STORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_SECRET_KEY
+                  optional: true
+            - name: OBJECT_STORE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_BUCKET
+                  optional: true
+            - name: OBJECT_STORE_SECURE
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: OBJECT_STORE_SECURE
                   optional: true
             # Brevo sender identity for the raw-HTML send path (added
             # 2026-05-15). The dashboard-template path was inheriting a
