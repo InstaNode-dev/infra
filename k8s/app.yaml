@@ -29,6 +29,18 @@ spec:
         app: instant-api
     spec:
       serviceAccountName: instant-api   # grants deploy-manager ClusterRole (see deploy-rbac.yaml)
+      # terminationGracePeriodSeconds — 35s after SIGTERM before kubelet
+      # escalates to SIGKILL. Budget (matches runServerWithGracefulShutdown
+      # in api/main.go):
+      #   preStop sleep             5s  ← LB sees /readyz 503 first
+      #   readinessDrainGrace       3s  ← in-process probe-tick window
+      #   gracefulShutdownTimeout  25s  ← Fiber drain in-flight handlers
+      #   safety margin             2s  ← buffer before SIGKILL
+      #   ──                       ────
+      #   total                    35s
+      # Default is 30s, which collides with our 25+3+5=33s drain.
+      # MR-P0-7 (BugBash 2026-05-20). Keep in sync with main.go consts.
+      terminationGracePeriodSeconds: 35
       # Spread replicas across nodes when possible — preferred (not required)
       # so a 1-node dev cluster still schedules both pods.
       affinity:
@@ -54,6 +66,16 @@ spec:
       containers:
         - name: api
           image: instant-api:local   # built with: docker build -t instant-api:local .
+          # preStop — sleep 5s before SIGTERM is delivered so the kubelet
+          # has a tick to observe the readinessProbe failure (the api
+          # flips inside runServerWithGracefulShutdown via
+          # hooks.Readyz.MarkDraining) and update Service endpoints.
+          # Without this, the LB keeps routing new traffic to a pod that
+          # is about to stop accepting connections. MR-P0-7.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
           ports:
             - containerPort: 8080
           envFrom:
