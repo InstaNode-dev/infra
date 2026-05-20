@@ -1,0 +1,38 @@
+{
+  "name": "instant-data — nightly backup CronJob stale (no successful run in >36h)",
+  "description": "Page when a backup CronJob in the instant-data namespace has not emitted a 'backup OK' success line for more than 36 hours (the schedule is 03:00 UTC daily, so a 36h gap = at least one missed night). Per-backup grouping (postgres-customers, mongodb, redis-provision) via FACET k8s_label_app_kubernetes_io_name. WARNING at 36h (one missed night) and CRITICAL at 60h (two missed nights — qualifies as a real durability incident per the runbook). Source: stdout from each backup CronJob, shipped via the NR log forwarder; success line emitted as '[<ts>] backup OK' by the CronJob shell scripts in infra/k8s/backups/*.yaml. Verified live by /Users/manassrivastava/.../infra/scripts/restore-drill.sh on 2026-05-20.\n\nWhen this fires:\n  1. Check `kubectl get cronjob -n instant-data` for `LAST SCHEDULE` and `SUSPEND` columns.\n  2. Check `kubectl get jobs -n instant-data | grep <backup-name>` for failed Job runs.\n  3. Pull the last failed pod's logs: `kubectl logs -n instant-data <pod>`.\n  4. Cross-reference: `s3://instant-pg-backups/<prefix>/` — is the most recent object actually missing or only the log line?\n  5. Re-trigger manually: `kubectl create job --from=cronjob/<name>-backup <name>-manual -n instant-data`.\n  6. Full restore-drill once a real backup lands: `bash infra/scripts/restore-drill.sh`.\n  See infra/BACKUP-RESTORE-RUNBOOK.md.",
+  "type": "NRQL",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE k8s_namespace_name = 'instant-data' AND k8s_label_app_kubernetes_io_component = 'backup' AND message LIKE '%backup OK%' FACET k8s_label_app_kubernetes_io_name"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "BELOW_OR_EQUALS",
+      "threshold": 0,
+      "thresholdDuration": 216000,
+      "thresholdOccurrences": "ALL"
+    },
+    {
+      "priority": "WARNING",
+      "operator": "BELOW_OR_EQUALS",
+      "threshold": 0,
+      "thresholdDuration": 129600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 3600,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 600,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 86400,
+    "openViolationOnExpiration": true,
+    "closeViolationsOnExpiration": false
+  },
+  "violationTimeLimitSeconds": 86400
+}

@@ -118,3 +118,58 @@ spec:
           annotations:
             summary: "NATS auth failures > 0 in 5m — tenants landing in legacy_open (no isolation)"
             description: "{{ $value }} NATS credential-issuance failures in 5m. Each failure = one tenant /queue/new that fell back to unauthenticated NATS. Check operator seed in nats-operator Secret matches running nats-server."
+
+    # =========================================================================
+    # Nightly backup CronJobs — postgres-customers / mongodb / redis-provision
+    # =========================================================================
+    # Source: kube-state-metrics emits `kube_cronjob_status_last_successful_time`
+    # (unix seconds of last successful Job run). Compare against `time()` and
+    # alert when the gap exceeds 36h (=1 missed night) or 60h (=2 missed nights).
+    # These rules activate only when kube-state-metrics is scraped — until then
+    # the New Relic log-based alert (newrelic/alerts/backup-stale-36h.json) is
+    # the authoritative coverage. Drill: bash infra/scripts/restore-drill.sh.
+    # Runbook: infra/BACKUP-RESTORE-RUNBOOK.md.
+    - name: instant-backups
+      rules:
+        - alert: BackupCronJobStale36h
+          expr: |
+            time() - max by (cronjob) (
+              kube_cronjob_status_last_successful_time{
+                namespace="instant-data",
+                cronjob=~"postgres-customers-backup|mongodb-backup|redis-provision-backup"
+              }
+            ) > 129600
+          for: 30m
+          labels:
+            severity: warning
+            service: backup
+          annotations:
+            summary: "Backup CronJob {{ $labels.cronjob }} has no successful run in >36h (one missed night)"
+            description: "Last successful run of {{ $labels.cronjob }} was {{ humanizeDuration $value }} ago. Schedule is 03:00 UTC daily; >36h gap = at least one missed night. See infra/BACKUP-RESTORE-RUNBOOK.md."
+
+        - alert: BackupCronJobStale60h
+          expr: |
+            time() - max by (cronjob) (
+              kube_cronjob_status_last_successful_time{
+                namespace="instant-data",
+                cronjob=~"postgres-customers-backup|mongodb-backup|redis-provision-backup"
+              }
+            ) > 216000
+          for: 30m
+          labels:
+            severity: critical
+            service: backup
+          annotations:
+            summary: "Backup CronJob {{ $labels.cronjob }} has no successful run in >60h (two missed nights) — durability incident"
+            description: "Last successful run of {{ $labels.cronjob }} was {{ humanizeDuration $value }} ago. Two consecutive missed nights = the Pro-tier backup promise is now broken for any data written since the last good backup. Follow infra/BACKUP-RESTORE-RUNBOOK.md."
+
+        - alert: BackupCronJobFailedLastRun
+          expr: |
+            max by (cronjob) (kube_job_status_failed{namespace="instant-data",job_name=~"(postgres-customers-backup|mongodb-backup|redis-provision-backup)-.*"}) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: backup
+          annotations:
+            summary: "Backup Job {{ $labels.cronjob }} most recent run is in Failed state"
+            description: "kube_job_status_failed > 0 for backup Job in instant-data. Pull pod logs and re-run manually if needed: see infra/BACKUP-RESTORE-RUNBOOK.md."
