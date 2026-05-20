@@ -193,3 +193,65 @@ groups:
             key, 401 from Brevo/Razorpay) for 10 consecutive minutes. Pod stays
             in rotation but the upstream call path is broken. Curl the pod's
             /readyz body for last_error and rotate the relevant secret.
+
+      # ── Code defects (BugBash 2026-05-20) ──────────────────────────────────────
+      #
+      # Either counter ticks when safego.Go's deferred recover() catches a
+      # panic that would otherwise crash a background goroutine. Pod stays
+      # up, but a recovered panic almost always indicates a real code defect
+      # — nil-deref, missing error path, divide-by-zero — that escaped the
+      # test gates. Page on any occurrence.
+      - alert: GoroutinePanicsRecovered
+        expr: |
+          sum(rate(instant_goroutine_panics_total[5m]))
+            + sum(rate(instant_worker_goroutine_panics_recovered_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "instant-* recovered a goroutine panic — code defect shipped"
+          description: >
+            A goroutine panicked and the safego.Go wrapper caught it; the pod
+            stayed up but a panic almost always indicates a real bug. Grep
+            NR Logs for `safego.panic_recovered` within the same window to
+            find the stack trace.
+
+      # ── Brevo send-side error spike (BugBash 2026-05-20) ──────────────────────
+      #
+      # SEND-side counter for the email pipeline (worker → Brevo API). When
+      # this spikes, the messages NEVER queue at Brevo — so the receive-side
+      # delivery-ratio alert is silent (no provider_message_id to track).
+      # The two alerts together bound the pipeline.
+      - alert: BrevoSendErrorsSpike
+        expr: sum(rate(brevo_send_errors_total[5m])) * 300 > 5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "brevo_send_errors_total > 5 in 5m — outbound email failing"
+          description: >
+            worker → Brevo /v3/smtp/email POSTs are returning non-2xx at
+            elevated rate. Common causes: API-key revoked, sender domain
+            dropped from validated list, IP blocklisted, sustained 429.
+            Check worker logs for `brevo.send_failed` lines for the
+            upstream HTTP status + body.
+
+      # ── Entitlement regrade failures (BugBash 2026-05-20) ─────────────────────
+      #
+      # A failure here means a CUSTOMER WHO PAID is still on the lower-tier
+      # backend. Pair with billing-charge-undeliverable (inverse failure:
+      # tier-not-translated-to-DB).
+      - alert: EntitlementRegradeFailed
+        expr: sum by (service) (rate(instant_entitlement_regrade_failed_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "entitlement_regrade_failed > 0 for {{ $labels.service }} — paying customer on under-tier infra"
+          description: >
+            entitlement_reconciler detected resource.tier < team.plan_tier
+            and called provisioner.RegradeResource(), which failed. A
+            customer paid for higher-tier limits but their backend is still
+            capped at the lower tier. Check provisioner logs + the tenant's
+            resource.provider_resource_id; replay the regrade after the
+            root issue is resolved.
