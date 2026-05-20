@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — nats_auth_failures_total > 0 [NATS isolation breach]",
+  "type": "NRQL",
+  "description": "Critical when any NATS credential-issuance failure fires. MR-P0-5 (NATS per-tenant isolation, 2026-05-20). Every failure here means a tenant's /queue/new landed in legacy_open mode instead of getting an isolated account JWT — i.e. that tenant is now sharing the unauthenticated NATS namespace with everyone else. Common causes: operator seed in the nats-operator Secret is out of sync with the running nats-server's operator JWT (rotate one without the other), or the resolver push subject is unreachable from the api pod. Source: instant.dev/internal/metrics.NatsAuthFailures counter — incremented inside queue.cred_issue_failed_fallback_legacy_open in api/internal/handlers/queue.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Metric WHERE service = 'api' AND metricName = 'nats_auth_failures_total'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 60,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
