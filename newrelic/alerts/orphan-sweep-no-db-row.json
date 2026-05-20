@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — orphan_sweep reaped instant-deploy-* ns with no backing deployments row (P0-3 atomic-provision)",
+  "type": "NRQL",
+  "description": "P0 page. instant_orphan_sweep_reaped_total{reason='no_db_row'} > 0 sustained for >1h. A no_db_row event means the orphan_sweep reconciler found an instant-deploy-<appID> namespace in the live cluster with NO matching deployments row in the platform DB. That can only happen if the api created the k8s namespace but the INSERT into deployments never committed — the P0-3 atomic-provision symptom surfacing in prod. Runbook: search NR Logs for `jobs.orphan_sweep.proposed_reap` with reason=no_db_row, capture the app_id, then trace back through the api POST /deploy/new logs for the same time window to find the partial-commit path that needs the atomic-rollback fix. Source: worker/internal/metrics/metrics.go (OrphanSweepReapedTotal), emit site worker/internal/jobs/orphan_sweep_reconciler.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_orphan_sweep_reaped_total) FROM Metric WHERE metricName = 'instant_orphan_sweep_reaped_total' AND reason = 'no_db_row'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

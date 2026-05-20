@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — propagation_runner saw an unknown kind (api/worker image skew)",
+  "type": "NRQL",
+  "description": "P1 warning — fires per-tick the moment an unknown pending_propagations kind appears, rather than waiting ~24h for the eventual dead-letter at maxAttempts exhaustion (which would trigger the higher-severity propagation-dead-lettered alert above). Modal cause: an old worker pod is running a stale image while the api has already started enqueuing a newer kind. Symptom: instant_propagation_unknown_kind_total{kind=...} > 0 for >5m. Fix: `kubectl rollout status deploy/instant-worker -n instant-infra` and confirm pod image SHA matches deploy/instant-api. The api enqueued the row in good faith, propagationHandlers does not yet contain the kind — finish the rollout. Source: worker/internal/metrics/metrics.go (PropagationUnknownKindTotal), emit site worker/internal/jobs/propagation_runner.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_propagation_unknown_kind_total) FROM Metric WHERE metricName = 'instant_propagation_unknown_kind_total' FACET kind"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

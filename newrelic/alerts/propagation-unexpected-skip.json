@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — propagation_runner unexpected_skip (CHAOS F1 silent data-loss class)",
+  "type": "NRQL",
+  "description": "P0 page. CHAOS F1 finding (2026-05-20): propagation_runner used to silently mark APPLIED on any row whose target resource was missing/in an unexpected state. The fix landed the instant_propagation_unexpected_skip_total{kind,resource_type,skip_reason} counter and the runner now treats unexpected_skip as a Failure (counts against maxAttempts) instead of a silent success. This alert is the post-fix sentinel: if a row hits a skip path more than once, the entitlement reconciler will converge eventually but the operator should investigate the underlying schema/state drift NOW because every unexpected_skip is one more class of customer-facing nondeterminism. Source: worker/internal/metrics/metrics.go (PropagationUnexpectedSkipTotal), emit site worker/internal/jobs/propagation_runner.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_propagation_unexpected_skip_total) FROM Metric WHERE metricName = 'instant_propagation_unexpected_skip_total' FACET kind, resource_type, skip_reason"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 900,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

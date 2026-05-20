@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — propagation_runner dead-lettered (paid customer regrade fell through)",
+  "type": "NRQL",
+  "description": "P0 page. The worker's propagation_runner is the last line of defence between a Razorpay subscription.charged webhook landing and the customer's infra actually being re-graded. instant_propagation_dead_lettered_total{reason,kind} ticks every time a row in pending_propagations exhausts its maxAttempts retries (reason=max_attempts — modal real failure: provisioner gRPC down, F1 unexpected_skip-as-failure, markApplied DB blip) OR is rejected because no handler is registered for its kind (reason=unknown_kind — CHAOS F2 worker/api image skew that escapes the maxAttempts ceiling). Either way: the customer paid and the platform did not deliver. Runbook: search NR Logs for `worker.propagation.dead_lettered` with the corresponding kind/team_id, then either DELETE the pending_propagations row to let the entitlement_reconciler converge OR reset failed_at=NULL+attempts=0 to re-arm the runner. See CHAOS-DRILL-2026-05-20.md F1/F2/F3. Source: worker/internal/metrics/metrics.go (PropagationDeadLetteredTotal), emit site worker/internal/jobs/propagation_runner.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_propagation_dead_lettered_total) FROM Metric WHERE metricName = 'instant_propagation_dead_lettered_total' FACET reason, kind"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

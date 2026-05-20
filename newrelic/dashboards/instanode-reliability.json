@@ -1,0 +1,251 @@
+{
+  "name": "instanode — reliability",
+  "description": "Single-pane reliability view rolling up every new metric shipped in the 2026-05-20 observability sweep: /readyz across all 3 services, propagation_runner queue health, orphan_sweep activity, magic-link rate-limiting, Brevo send/error/webhook funnel, provisioner circuit-breaker state, missing-renderer events, and storage presign throughput. Source: same Metric + Log feeds as the per-surface dashboards. Apply via newrelic/apply.sh.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Reliability",
+      "description": "Cross-service health, queues, and dependencies",
+      "widgets": [
+        {
+          "title": "/readyz status (api / worker / provisioner)",
+          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT latest(readyz_check_status) FROM Metric WHERE metricName = 'readyz_check_status' FACET service, check SINCE 5 minutes ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "/readyz failed checks (count, last 1h)",
+          "layout": { "column": 7, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT filter(uniqueCount(check), WHERE readyz_check_status = 0) AS 'failed' FROM Metric WHERE metricName = 'readyz_check_status' SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 1 },
+              { "alertSeverity": "CRITICAL", "value": 2 }
+            ]
+          }
+        },
+        {
+          "title": "/readyz degraded checks (count, last 1h)",
+          "layout": { "column": 10, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT filter(uniqueCount(check), WHERE readyz_check_status = 0.5) AS 'degraded' FROM Metric WHERE metricName = 'readyz_check_status' SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 1 }
+            ]
+          }
+        },
+        {
+          "title": "Propagation queue depth + dead-lettered rate",
+          "layout": { "column": 1, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_propagation_dead_lettered_total) AS 'dead_lettered', sum(instant_propagation_unknown_kind_total) AS 'unknown_kind', sum(instant_propagation_unexpected_skip_total) AS 'unexpected_skip' FROM Metric WHERE metricName IN ('instant_propagation_dead_lettered_total', 'instant_propagation_unknown_kind_total', 'instant_propagation_unexpected_skip_total') TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Propagation retry distribution by kind",
+          "layout": { "column": 7, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_propagation_dead_lettered_total) FROM Metric WHERE metricName = 'instant_propagation_dead_lettered_total' FACET reason, kind SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Orphan sweep — reaped by reason (24h)",
+          "layout": { "column": 1, "row": 7, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.stacked-bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_orphan_sweep_reaped_total) FROM Metric WHERE metricName = 'instant_orphan_sweep_reaped_total' FACET reason TIMESERIES SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Orphan sweep — reap failures by reason (24h)",
+          "layout": { "column": 7, "row": 7, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_orphan_sweep_reap_failed_total) FROM Metric WHERE metricName = 'instant_orphan_sweep_reap_failed_total' FACET reason TIMESERIES SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Magic-link rate-limited / hour",
+          "layout": { "column": 1, "row": 10, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT rate(sum(instant_magic_link_email_rate_limited_total), 1 hour) AS 'rate-limited/h' FROM Metric WHERE metricName = 'instant_magic_link_email_rate_limited_total' TIMESERIES SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Brevo send errors by classification (1h)",
+          "layout": { "column": 5, "row": 10, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(brevo_send_errors_total) FROM Metric WHERE metricName = 'brevo_send_errors_total' FACET classification, status_code SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Brevo delivery ratio (1h sliding)",
+          "layout": { "column": 9, "row": 10, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT percentage(sum(brevo_webhook_events_total), WHERE event = 'delivered') AS 'delivered %' FROM Metric WHERE metricName = 'brevo_webhook_events_total' AND event IN ('delivered', 'bounced_hard', 'bounced_soft', 'rejected', 'complaint', 'deferred', 'unsubscribed', 'error') SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "CRITICAL", "value": 95 },
+              { "alertSeverity": "WARNING", "value": 98 }
+            ]
+          }
+        },
+        {
+          "title": "Brevo webhook events funnel (24h)",
+          "layout": { "column": 1, "row": 13, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(brevo_webhook_events_total) FROM Metric WHERE metricName = 'brevo_webhook_events_total' FACET event SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Email missing-renderer ticks (any > 0 == P0)",
+          "layout": { "column": 7, "row": 13, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(email_missing_renderer_total) AS 'missing renderer events' FROM Metric WHERE metricName = 'email_missing_renderer_total' FACET kind SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Provisioner circuit-breaker state per backend",
+          "layout": { "column": 1, "row": 16, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT latest(instant_provisioner_circuit_state) AS 'state (0=CLOSED 1=HALF 2=OPEN)' FROM Metric WHERE metricName = 'instant_provisioner_circuit_state' FACET backend TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Storage presign rate (1h sliding)",
+          "layout": { "column": 7, "row": 16, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) AS 'presigns' FROM Log WHERE service = 'api' AND message LIKE '%storage.presign%' AND message NOT LIKE '%storage.presign.lookup_failed%' AND message NOT LIKE '%storage.presign.sign_failed%' TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Billing charge undeliverable (paid, NOT upgraded) — must be 0",
+          "layout": { "column": 1, "row": 19, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_billing_charge_undeliverable_total) AS 'undelivered upgrades (24h)' FROM Metric WHERE metricName = 'instant_billing_charge_undeliverable_total' SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "CRITICAL", "value": 1 }
+            ]
+          }
+        },
+        {
+          "title": "Worker /healthz migration_count drift (api vs worker, 1h)",
+          "layout": { "column": 7, "row": 19, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) AS 'non-ok migration_status events' FROM Log WHERE service IN ('api', 'worker') AND message LIKE '%migration_status%' AND message NOT LIKE '%migration_status\\\":\\\"ok%' TIMESERIES SINCE 1 hour ago FACET service"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        }
+      ]
+    }
+  ]
+}
