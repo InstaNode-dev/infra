@@ -72,3 +72,21 @@ spec:
   ports:
     - port: 27017
       targetPort: 27017
+
+---
+# Secret consumed by provisioner deployment as MONGO_ADMIN_URI (added 2026-05-21
+# for OSS prep — was previously inlined in provisioner/deployment.yaml).
+# Operators MUST replace placeholders. The URI format is:
+#   mongodb://<user>:<password>@mongodb.instant-data.svc.cluster.local:27017
+# where <user>/<password> match MONGO_INITDB_ROOT_USERNAME/PASSWORD set on
+# the mongodb StatefulSet (see the env vars above in this same file once you
+# template them).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongodb-admin
+  namespace: instant-data
+type: Opaque
+stringData:
+  MONGO_ADMIN_URI: "CHANGE_ME"
+
