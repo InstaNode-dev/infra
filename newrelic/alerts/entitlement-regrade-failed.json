@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — entitlement_regrade_failed > 0 [tier change not delivered to backend]",
+  "type": "NRQL",
+  "description": "Fires on ANY increment of `instant_entitlement_regrade_failed_total`. The entitlement_reconciler job notices when a resource.tier is below the team's current plan tier (post-upgrade drift) and calls provisioner.RegradeResource() to bring the backend (Postgres dedicated pod / Redis ACL / Mongo user / NATS account) up to the paid limits. A failure here means a CUSTOMER who already paid for a higher tier is still running on the lower-tier backend — they have NOT received what they paid for. This is a paying-customer-impact signal. Pair with billing-charge-undeliverable (which catches the inverse: tier-not-translated-to-DB) — both surface the same problem class. Source: worker/internal/jobs/entitlement_reconciler.go; counter labelled by service (postgres/redis/mongo/queue). BugBash 2026-05-20.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_entitlement_regrade_failed_total) FROM Metric FACET service"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
