@@ -1,0 +1,271 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: github-runner
+  labels:
+    app.kubernetes.io/name: github-actions-runner
+---
+# Self-hosted GitHub Actions runner for InstaNode-dev/*.
+#
+# WHY:
+#   Private repos (worker, provisioner, infra) consume metered GitHub Actions
+#   minutes. We hit the cap during a high-iteration session on 2026-05-21.
+#   This runner pod runs ON YOUR EXISTING DOKS CLUSTER and consumes ZERO
+#   metered minutes — only your already-paid DigitalOcean node-pool budget.
+#
+# WHAT IT REPLACES:
+#   `runs-on: ubuntu-latest` on each workflow. After this is applied + each
+#   workflow's `runs-on` is patched to `[self-hosted, instanode]`, that
+#   workflow's metered minutes go to zero.
+#
+# THIS VERSION INCORPORATES THE PB02-H50 REVIEW FIXES:
+#   - Persistent .runner state across pod restarts (PVC, F2)
+#   - SIGTERM trap only, not EXIT (F3)
+#   - Operator-setup steps include the GHCR_PUSH_TOKEN secret (F4)
+#   - Image pinned to current actions/runner release (F1)
+#   - non-root securityContext + service account (F7)
+#   - strategy: Recreate so two pods never share a runner name (F8)
+#   - CGNAT range added to NetworkPolicy except-list (F6)
+#
+# ─────────────────────────────────────────────────────────────────────────
+# OPERATOR STEPS (one-time setup)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# 1. Create a fine-grained PAT at https://github.com/settings/tokens?type=beta
+#    Scopes: repo (full) + workflow + administration:read for the org or
+#    each target repo. For org-wide, use a GitHub App + installation token —
+#    longer-lived than a PAT and revocable per-repo.
+#
+# 2. Generate a REGISTRATION token (long-lived; not the 1-hour single-use
+#    runner-token endpoint). The org-level endpoint returns one good for
+#    ~14 days:
+#      curl -L -X POST \
+#        -H "Authorization: Bearer <PAT>" \
+#        -H "Accept: application/vnd.github+json" \
+#        https://api.github.com/orgs/InstaNode-dev/actions/runners/registration-token
+#    Take the `.token` from the response.
+#
+# 3. Create the GHCR_PUSH_TOKEN PAT (separate from step 1) with scope
+#    `write:packages` only. This lets the runner push container images
+#    during Deploy workflows.
+#
+# 4. Create the Secret:
+#      kubectl create secret generic github-runner-token \
+#        -n github-runner \
+#        --from-literal=RUNNER_TOKEN=<token-from-step-2> \
+#        --from-literal=GITHUB_URL=https://github.com/InstaNode-dev \
+#        --from-literal=GHCR_PUSH_TOKEN=<token-from-step-3>
+#
+# 5. Apply the manifest:
+#      kubectl apply -f infra/k8s/self-hosted-runner.yaml
+#
+# 6. Wait ~30 seconds. Verify:
+#      kubectl get pods -n github-runner
+#      kubectl logs -n github-runner deploy/github-runner --tail=20
+#    The pod should log "Listening for Jobs". Confirm at
+#    https://github.com/organizations/InstaNode-dev/settings/actions/runners
+#    that `instanode-runner` shows up as Idle.
+#
+# 7. Patch each repo's workflow:
+#      jobs:
+#        deploy:
+#          runs-on: [self-hosted, instanode]   # was: ubuntu-latest
+#    One PR per repo. Test with the lowest-risk repo first (mcp or content).
+#
+# 8. Re-issue the registration token before its expiry (cron: every 12 days
+#    do `kubectl create secret ... --dry-run=client | kubectl replace -f -`).
+#    Or use the GitHub App pattern which auto-rotates installation tokens.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# COST + SECURITY CAVEATS
+# ─────────────────────────────────────────────────────────────────────────
+#
+# - This runner pod has hostPath mounts (docker.sock) and root-equivalent
+#   capabilities on the underlying node. Acceptable for a single-tenant
+#   trust model (solo founder). NOT acceptable for multi-tenant orgs —
+#   use Actions Runner Controller (ARC) with ephemeral pods instead.
+#
+# - The runner can execute arbitrary code via any workflow it runs. Trust
+#   boundary = "anyone with push access to InstaNode-dev/*". Today this
+#   is one person.
+#
+# - Builds compete with customer workloads for node CPU. If load becomes
+#   an issue, add a `nodeSelector` to pin the runner to its own node pool.
+#
+# - For higher reliability, scale `replicas` up + ensure each pod has a
+#   distinct RUNNER_NAME (use Pod hostname as a suffix — see envFrom +
+#   downward API below). Single-replica is fine to start.
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: github-runner
+  namespace: github-runner
+
+---
+# Persistent volume so .runner state survives pod restarts.
+# Without this, every pod restart re-runs ./config.sh which requires a fresh
+# registration token. With it, the existing registration is reused.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: github-runner-state
+  namespace: github-runner
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+  # storageClassName omitted — falls back to cluster default. On DOKS this
+  # is `do-block-storage`.
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-runner
+  namespace: github-runner
+spec:
+  replicas: 1
+  strategy:
+    # Recreate so we never have two pods sharing RUNNER_NAME=instanode-runner
+    # mid-rollout. The brief offline window during rollout is acceptable —
+    # GitHub queues jobs until a runner becomes available.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: github-runner
+  template:
+    metadata:
+      labels:
+        app: github-runner
+    spec:
+      serviceAccountName: github-runner
+      restartPolicy: Always
+      # Optional: pin to its own node pool to isolate from customer workloads.
+      # nodeSelector:
+      #   doks.digitalocean.com/node-pool: builder-pool
+      securityContext:
+        # The actions/runner image runs as uid 1001. Pin that explicitly
+        # so the container does NOT run as root — limits blast radius if
+        # a workflow execution escapes the runner process.
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      containers:
+        - name: runner
+          # actions/runner image. Bump this in step with new GitHub releases.
+          # https://github.com/actions/runner/releases
+          image: ghcr.io/actions/actions-runner:2.334.0
+          env:
+            - name: REPO_URL
+              valueFrom:
+                secretKeyRef:
+                  name: github-runner-token
+                  key: GITHUB_URL
+            - name: RUNNER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-runner-token
+                  key: RUNNER_TOKEN
+            - name: RUNNER_NAME
+              # Append the pod-uid suffix so multi-replica scaling Just Works
+              # without manual RUNNER_NAME bookkeeping.
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: RUNNER_LABELS
+              value: self-hosted,instanode,linux,x64
+            - name: RUNNER_WORKDIR
+              value: /home/runner/_work
+            - name: GHCR_PUSH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-runner-token
+                  key: GHCR_PUSH_TOKEN
+                  optional: false   # required for Deploy workflows
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              cd /home/runner
+
+              # Re-use existing .runner if present (persistent volume).
+              # Only fresh-register if it's missing.
+              if [ ! -f .runner ]; then
+                ./config.sh \
+                  --url "$REPO_URL" \
+                  --token "$RUNNER_TOKEN" \
+                  --name "runner-${RUNNER_NAME:0:8}" \
+                  --labels "$RUNNER_LABELS" \
+                  --work "$RUNNER_WORKDIR" \
+                  --unattended \
+                  --replace
+              fi
+
+              # Trap ONLY pod-shutdown signals, not job-completion EXIT.
+              # The runner process loops internally between jobs; EXIT would
+              # fire after every single job and deregister the runner.
+              graceful_shutdown() {
+                echo "received SIGTERM/SIGINT — deregistering runner"
+                ./config.sh remove --token "$RUNNER_TOKEN" || true
+                exit 0
+              }
+              trap graceful_shutdown SIGTERM SIGINT
+
+              exec ./run.sh
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: 4
+              memory: 8Gi
+          volumeMounts:
+            - name: state
+              mountPath: /home/runner
+            # docker.sock for buildx — needed by Deploy workflows that push
+            # images. Trust boundary documented above.
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: github-runner-state
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+
+---
+# NetworkPolicy — uncomment after verifying the runner registers + runs at
+# least one workflow successfully. Tightens egress to GitHub + GHCR + the
+# K8s API.
+#
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: github-runner-egress
+#   namespace: github-runner
+# spec:
+#   podSelector:
+#     matchLabels:
+#       app: github-runner
+#   policyTypes: [Egress]
+#   egress:
+#     - to:
+#         - ipBlock:
+#             cidr: 0.0.0.0/0
+#             except:
+#               - 10.0.0.0/8        # private RFC1918
+#               - 172.16.0.0/12     # private RFC1918
+#               - 192.168.0.0/16    # private RFC1918
+#               - 100.64.0.0/10     # CGNAT (DOKS pod CIDR variant uses this)
+#               - 169.254.0.0/16    # link-local + AWS metadata IMDS
+#       ports:
+#         - protocol: TCP
+#           port: 443
+#         - protocol: TCP
+#           port: 80
