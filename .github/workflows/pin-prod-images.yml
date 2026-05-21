@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate tag matches production regex
         env:
@@ -172,10 +172,10 @@ jobs:
       id-token: write   # for cosign keyless signing
     steps:
       - name: Install syft
-        uses: anchore/sbom-action/download-syft@v0.17.0
+        uses: anchore/sbom-action/download-syft@v0.24.0
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3.5.0
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Log in to GHCR
         env:
@@ -204,7 +204,7 @@ jobs:
           echo "::notice::SBOM attached to $IMAGE"
 
       - name: Upload SBOM as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-${{ inputs.package }}-${{ inputs.tag }}
           path: sbom.spdx.json
