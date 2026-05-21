@@ -116,8 +116,16 @@ spec:
               value: "k8s"
             - name: REDIS_PROVISION_HOST
               value: "redis-provision.instant-data.svc.cluster.local:6379"
+            # MONGO_ADMIN_URI was historically inlined here as
+            # `mongodb://root:root@...` for local-dev convenience. For OSS
+            # publication it is sourced from a Secret so the manifest contains
+            # no credentials. Operators MUST create the secret before applying;
+            # see infra/k8s/data/mongodb.yaml for the matching Secret template.
             - name: MONGO_ADMIN_URI
-              value: "mongodb://root:root@mongodb.instant-data.svc.cluster.local:27017"
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-admin
+                  key: MONGO_ADMIN_URI
             - name: MONGO_HOST
               value: "mongodb.instant-data.svc.cluster.local:27017"
             - name: PROVISIONER_SECRET
