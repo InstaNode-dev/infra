@@ -194,18 +194,9 @@ spec:
                   name: instant-secrets
                   key: R2_BUCKET_NAME
                   optional: true
-            - name: MINIO_ROOT_USER
-              valueFrom:
-                secretKeyRef:
-                  name: instant-secrets
-                  key: MINIO_ROOT_USER
-                  optional: true
-            - name: MINIO_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: instant-secrets
-                  key: MINIO_ROOT_PASSWORD
-                  optional: true
+            # MINIO_ROOT_USER/MINIO_ROOT_PASSWORD env refs retired 2026-05-20
+            # (chore/retire-self-hosted-minio-2026-05-20). The api reads
+            # OBJECT_STORE_* below for the canonical DO Spaces backend.
             # ── Razorpay annual plan IDs (codified 2026-05-20) ────────────────
             # Live since the annual-pricing toggle shipped. Required for any
             # *_yearly plan checkout to succeed. NOT optional in prod, but
@@ -262,8 +253,10 @@ spec:
                   optional: true
             # ── Object-store backend (storage abstraction, 2026-05-20) ────────
             # OBJECT_STORE_BACKEND selects the impl: do-spaces (prod today),
-            # r2, s3, or minio. The rest are backend-specific. See
-            # common/storageprovider/factory.go.
+            # r2, or s3. The rest are backend-specific. See
+            # common/storageprovider/factory.go. The self-hosted MinIO backend
+            # was retired 2026-05-20 — DO Spaces (`nyc3.digitaloceanspaces.com`,
+            # bucket `instant-shared`) is the canonical production backend.
             - name: OBJECT_STORE_BACKEND
               valueFrom:
                 secretKeyRef:
