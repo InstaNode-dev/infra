@@ -44,7 +44,7 @@ jobs:
     name: Lint + schema-check before apply
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: yamllint
         run: |
           python3 -m pip install --quiet yamllint
@@ -75,7 +75,7 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Confirm the APPLY phrase
         run: |
@@ -86,7 +86,7 @@ jobs:
           echo "confirm phrase OK — proceeding."
 
       - name: Set up kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@v5
         with:
           version: 'latest'
 
