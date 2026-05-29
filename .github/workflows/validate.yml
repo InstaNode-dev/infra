@@ -24,9 +24,13 @@ name: validate
 on:
   push:
     branches: [master]
-    paths: ['k8s/**', '.github/workflows/validate.yml']
+    paths:
+      - 'k8s/**'
+      - '.github/workflows/**'
   pull_request:
-    paths: ['k8s/**', '.github/workflows/validate.yml']
+    paths:
+      - 'k8s/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:
