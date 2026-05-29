@@ -82,11 +82,13 @@ spec:
             # can reference it by name.
             - containerPort: 8091
               name: metrics
-          # Probes (2026-05-18): the worker binary registers ONLY /healthz
-          # (plus /metrics) — it never serves /livez. All three probes hit
-          # /healthz. /healthz checks River queue connectivity + DB pool
-          # (slow on cold start); heavy job replay on restart can stall it
-          # briefly, which the generous startupProbe budget absorbs.
+          # Probes (refreshed 2026-05-29): worker serves /healthz (shallow:
+          # binary + River queue + DB pool ping) AND /readyz (deep upstream
+          # matrix — same shape as api/provisioner via common/readiness/,
+          # wired READYZ-WIRING-2026-05-20.md). Startup + liveness stay on
+          # /healthz (don't fail-over the pod for a slow downstream); only
+          # readiness uses /readyz so the worker is taken out of rotation
+          # when a critical upstream actually breaks.
           startupProbe:
             httpGet:
               path: /healthz
@@ -95,14 +97,14 @@ spec:
             failureThreshold: 60     # 10 min total — covers job-replay startup
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz         # deep readiness matrix (critical upstreams → 503)
               port: 8091
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /healthz        # worker serves only /healthz (no /livez)
+              path: /healthz        # shallow — don't restart pod for upstream blips
               port: 8091
             initialDelaySeconds: 15
             periodSeconds: 30
