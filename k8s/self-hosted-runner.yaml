@@ -80,6 +80,37 @@ metadata:
 # COST + SECURITY CAVEATS
 # ─────────────────────────────────────────────────────────────────────────
 #
+# SEC-INFRA-2 (P1, 2026-05-29): Runner pod RCE → root on node.
+#   The docker.sock hostPath mount below lets any workflow run
+#   `docker run --privileged -v /:/host` and escape to the host
+#   filesystem. Trust boundary is "anyone with push to InstaNode-dev/*"
+#   which is single-person today, but this remains a P1 finding because
+#   a single supply-chain compromise (vendored npm/go dep with a
+#   post-install hook, malicious action like `tj-actions/changed-files`
+#   class CVEs) gives the attacker the same blast radius.
+#
+#   PERMANENT FIX (deferred — separate PR, scope > this session):
+#     Replace docker.sock with one of:
+#       (a) Rootless buildkitd as a sidecar (no host socket); image
+#           builds run inside the runner pod without host privileges.
+#       (b) Actions Runner Controller (ARC) with ephemeral per-job
+#           pods + buildkitd sidecar.
+#       (c) Sysbox runtime (system container, isolated nested docker).
+#     Estimated 3-5 days of operator work + workflow rewrites.
+#
+#   INTERIM MITIGATION (this PR): the egress NetworkPolicy below is
+#   ACTIVATED (was shipped commented-out for one-time verification).
+#   This restricts the runner's outbound traffic to GitHub + GHCR +
+#   public internet (TCP 80/443) and BLOCKS access to:
+#     - 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (in-cluster pods
+#       AND the k8s API at 10.245.0.1 on DOKS)
+#     - 100.64.0.0/10 (CGNAT — DOKS pod CIDR variant)
+#     - 169.254.0.0/16 (link-local + DO/AWS metadata IMDS)
+#   So a runner-pod RCE that escapes to docker.sock still cannot
+#   pivot to the k8s API, cluster-internal services, or cloud
+#   metadata. The host-fs escape via docker.sock remains possible
+#   but is now isolated from the cluster control plane.
+#
 # - This runner pod has hostPath mounts (docker.sock) and root-equivalent
 #   capabilities on the underlying node. Acceptable for a single-tenant
 #   trust model (solo founder). NOT acceptable for multi-tenant orgs —
@@ -240,32 +271,63 @@ spec:
             type: Socket
 
 ---
-# NetworkPolicy — uncomment after verifying the runner registers + runs at
-# least one workflow successfully. Tightens egress to GitHub + GHCR + the
-# K8s API.
+# SECURITY: SEC-INFRA-2 mitigation. Activated 2026-05-29.
 #
-# apiVersion: networking.k8s.io/v1
-# kind: NetworkPolicy
-# metadata:
-#   name: github-runner-egress
-#   namespace: github-runner
-# spec:
-#   podSelector:
-#     matchLabels:
-#       app: github-runner
-#   policyTypes: [Egress]
-#   egress:
-#     - to:
-#         - ipBlock:
-#             cidr: 0.0.0.0/0
-#             except:
-#               - 10.0.0.0/8        # private RFC1918
-#               - 172.16.0.0/12     # private RFC1918
-#               - 192.168.0.0/16    # private RFC1918
-#               - 100.64.0.0/10     # CGNAT (DOKS pod CIDR variant uses this)
-#               - 169.254.0.0/16    # link-local + AWS metadata IMDS
-#       ports:
-#         - protocol: TCP
-#           port: 443
-#         - protocol: TCP
-#           port: 80
+# Tightens egress so a runner-pod RCE (e.g. via docker.sock host escape)
+# cannot pivot to the k8s API server, cluster-internal services, or
+# DO/AWS metadata IMDS at 169.254.169.254. Outbound is limited to
+# TCP 80/443 (GitHub, GHCR, public package mirrors) plus UDP/TCP 53
+# for DNS to the in-cluster CoreDNS.
+#
+# OPERATOR NOTES:
+#   - Apply with `kubectl apply -f infra/k8s/self-hosted-runner.yaml`
+#     (this file). The Deployment + ServiceAccount + PVC are unchanged.
+#   - Verify post-apply by triggering a Deploy workflow on the
+#     lowest-risk repo (mcp or content) and watching the runner logs.
+#     A regression would surface as `dial tcp <k8s-api>:443: i/o
+#     timeout` in `./run.sh` output.
+#   - If the cluster runs on flatcar/k3s where the pod CIDR sits
+#     outside the RFC1918 ranges below, this policy will need an
+#     explicit `to: namespaceSelector` for kube-system DNS.
+#     DOKS uses 10.244.0.0/16 (pod) + 10.245.0.0/16 (service), so
+#     CoreDNS is reachable via the namespaceSelector rule below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: github-runner-egress
+  namespace: github-runner
+spec:
+  podSelector:
+    matchLabels:
+      app: github-runner
+  policyTypes: [Egress]
+  egress:
+    # DNS — must allow CoreDNS lookups to resolve github.com / ghcr.io.
+    # kube-system carries the cluster DNS labels by default; restrict to
+    # UDP+TCP 53 only.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Public-internet HTTPS/HTTP. Excludes RFC1918, CGNAT, link-local
+    # so a compromised runner cannot reach the k8s API, in-cluster
+    # services, or cloud metadata IMDS.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8        # private RFC1918 (DOKS pod+svc CIDR)
+              - 172.16.0.0/12     # private RFC1918
+              - 192.168.0.0/16    # private RFC1918
+              - 100.64.0.0/10     # CGNAT (DOKS pod CIDR variant)
+              - 169.254.0.0/16    # link-local + cloud metadata IMDS
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
