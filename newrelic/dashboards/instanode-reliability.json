@@ -244,6 +244,20 @@
             ],
             "platformOptions": { "ignoreTimeRange": false }
           }
+        },
+        {
+          "title": "Idempotency replay refunds by route (1h) — FINDING API-1",
+          "layout": { "column": 1, "row": 22, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT rate(sum(instant_idempotency_replay_refunded_total), 1 minute) AS 'refunds/min' FROM Metric WHERE metricName = 'instant_idempotency_replay_refunded_total' TIMESERIES SINCE 1 hour ago FACET route"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
         }
       ]
     }

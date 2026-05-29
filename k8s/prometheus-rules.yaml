@@ -512,6 +512,36 @@ spec:
               brevo check goes 0.5). Rotate the credential / re-validate the
               policy before the breaker escalates to failed.
 
+    # Idempotency replay refund — FINDING API-1 (fix 2026-05-29). Every
+    # cache HIT in the Idempotency middleware refunds the per-fingerprint
+    # daily rate-limit counter. A steady non-zero rate is HEALTHY (agents
+    # honouring the published Stripe-shape replay contract). A spike on
+    # one route correlates with an upstream brownout driving agent retry
+    # storms — flip to NR and check the matching 5xx rate. Threshold is
+    # noisier than a page (>50/10m) — paging would fire on every routine
+    # retry storm; the operator pages on the correlated 5xx alert.
+    - name: instant-api-idempotency
+      rules:
+        - alert: IdempotencyReplayRefundSpike
+          expr: |
+            sum(rate(instant_idempotency_replay_refunded_total[10m])) by (route) * 600 > 50
+          for: 10m
+          labels:
+            severity: warning
+            service: api
+          annotations:
+            summary: "idempotency replay refunds > 50 in 10m on route {{ $labels.route }}"
+            description: |
+              instant_idempotency_replay_refunded_total spiked > 50 events
+              in 10m on route {{ $labels.route }}. Each tick = one cache HIT
+              that refunded the per-fingerprint rate-limit slot — agents
+              are retrying with the same Idempotency-Key. Healthy means an
+              upstream blip is being absorbed; unhealthy means an upstream
+              is sustainedly returning 5xx and agents are wedged in retry.
+              Cross-check the api 5xx rate for the same route; if also up,
+              page on the 5xx alert and investigate the corresponding
+              backend (provisioner, customer-DB, NATS).
+
     # Brevo RECEIVE-side delivery-ratio alert (Prom mirror of NR
     # email-delivery-ratio-low.json). Webhook receiver counter
     # brevo_webhook_events_total{event} — `delivered` / total over 1h.

@@ -38,6 +38,7 @@ fires. Operators need this so they don't panic when a fresh deploy looks
 | `instant_provisioner_circuit_state` | provisioner | `backend` | **eager** (GaugeVec — every breaker initialised at boot at state=0 CLOSED) | `provisioner-circuit-open.json` | `ProvisionerCircuitOpen`, `ProvisionerCircuitHalfOpen` | "Provisioner circuit-breaker state per backend" |
 | `email_missing_renderer_total` | worker | `kind` | lazy (CounterVec — any tick is a bug, label series only appears on the broken kind) | `email-missing-renderer.json` | `EmailMissingRenderer` | "Email missing-renderer ticks (any > 0 == P0)" |
 | `migration_version`, `migration_count`, `migration_status` (worker `/healthz` JSON fields, NOT Prometheus metrics) | worker | n/a (log-based) | **eager** (read live from `schema_migrations` table by `migrations.Reader`, cached 60s) | `worker-migration-mismatch.json` (log-based) | n/a (log-based) | "Worker /healthz migration_count drift" |
+| `instant_idempotency_replay_refunded_total` | api | `route` | lazy (CounterVec — first cache HIT on each route materialises the label series; a fresh deploy with no retries reports nothing until the first agent retries with the same `Idempotency-Key`) | `idempotency-replay-refund-spike.json` | `IdempotencyReplayRefundSpike` | "Idempotency replay refunds by route (1h) — FINDING API-1" |
 
 ## Lazy-emit gotcha — what operators should expect
 

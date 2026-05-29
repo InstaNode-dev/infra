@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — idempotency_replay_refunded spike (likely upstream brownout driving agent retries)",
+  "type": "NRQL",
+  "description": "P2 warning. instant_idempotency_replay_refunded_total ticks every time the Idempotency middleware serves a cached response and refunds the per-fingerprint daily rate-limit counter (FINDING API-1, fix 2026-05-29). A steady non-zero rate is healthy — agents retry transient 5xx with the same Idempotency-Key and we honour the Stripe-shape replay contract. A sudden spike on one route correlates with an upstream brownout (provisioner stalling, customer-DB pool exhaustion, NATS unauthorized). When this fires, flip to NR and check the corresponding 5xx rate for the same route — the agent population is hammering retries and the cached responses are the buffer keeping the funnel intact. Source: api/internal/metrics/metrics.go (IdempotencyReplayRefunded), emit site api/internal/middleware/rate_limit.go (RefundRateLimitCounter). Threshold is intentionally noisier than a page — fire WARNING on >50 refunds in 10 minutes so the operator can correlate against a 5xx spike.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_idempotency_replay_refunded_total) FROM Metric WHERE metricName = 'instant_idempotency_replay_refunded_total' FACET route"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 50,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
