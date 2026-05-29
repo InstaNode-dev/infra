@@ -9,43 +9,138 @@ metadata:
   namespace: instant
 
 ---
-# ClusterRole granting the permissions needed to manage per-deploy namespaces
-# and all k8s resources created inside them.
+# ClusterRole granting the permissions needed to manage per-deploy
+# namespaces and (today, transitionally) the k8s resources created
+# inside them.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# SEC-INFRA-1 MIGRATION IN PROGRESS (2026-05-29)
+# ─────────────────────────────────────────────────────────────────────────
+# A single api RCE currently lets the attacker `kubectl get secret -A`
+# across the cluster: kube-system SA tokens, cert-manager TLS keys,
+# every customer's encrypted-DB credentials, every imagePullSecret,
+# ADMIN_PATH_PREFIX, JWT_SECRET, AES_KEY. Single api RCE = cluster
+# takeover.
+#
+# The target end-state is per-tenant-namespace RoleBindings, with the
+# sensitive verbs (secrets/configmaps/pods) bound only inside namespaces
+# the api owns (`instant-deploy-*`, `instant-stack-*`).
+#
+# Rollout is two-phase to avoid breaking production during the cutover:
+#
+#   PHASE 1 (this PR): adds the `instant-api-tenant-resources` ClusterRole
+#     below (NOT bound cluster-wide) and an `instant-api-instant-secrets-reader`
+#     Role in the `instant` namespace. Keeps the existing cluster-wide
+#     secrets/configmaps/pods grant for now. NO PRODUCTION-VISIBLE CHANGE.
+#
+#   PHASE 2 (api code PR — separate, see issue/follow-up): the api's
+#     setupTenantNamespace() begins creating a RoleBinding inside each
+#     new per-tenant namespace, binding `instant-api-tenant-resources` to
+#     the api's SA. Backfill: a one-shot kubectl/jsonnet script ensures
+#     existing `instant-deploy-*` / `instant-stack-*` namespaces also get
+#     the binding.
+#
+#   PHASE 3 (operator-only manifest follow-up): once Phase 2 is in prod
+#     and every existing tenant namespace has the RoleBinding,
+#     `secrets`, `configmaps`, `pods`, `pods/log`, `services`, `limitranges`,
+#     `resourcequotas`, the cluster-wide `apps/deployments` verbs (other
+#     than `list`), `batch/jobs`, and `networking.k8s.io/ingresses` (other
+#     than `list`) and `networkpolicies` are stripped from THIS ClusterRole
+#     and live only on `instant-api-tenant-resources`.
+#
+# The end-state shape (Phase 3) of this ClusterRole is documented inline
+# at the bottom of this file.
+# ─────────────────────────────────────────────────────────────────────────
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: instant-api-deploy-manager
 rules:
   # Namespaces: create (for new deploys) and delete (for teardown).
+  # MUST stay cluster-scoped (namespaces are themselves cluster-scoped).
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
 
   # Core workload resources inside each deploy namespace.
+  # PHASE 3 TODO: strip — these will be granted only via the per-tenant
+  # RoleBinding to instant-api-tenant-resources.
   - apiGroups: [""]
     resources: ["limitranges", "resourcequotas", "services", "secrets", "configmaps", "pods"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # Pod log streaming — needed for GET /resources/:token/logs.
-  # Separate rule required because pods/log is a subresource with its own RBAC entry.
+  # PHASE 3 TODO: strip — moved to per-tenant RoleBinding.
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
 
   # Deployments.
+  # PHASE 3 TODO: keep ONLY `list` (for catalog enumeration);
+  # get/watch/create/update/patch/delete move to per-tenant RoleBinding.
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # Batch Jobs — the api runs each Kaniko build as a Job inside the
-  # per-deploy namespace (client.go BatchV1().Jobs(ns).Create/Get/Delete).
-  # Without this rule every /deploy/new and /stacks/new build is
-  # RBAC-Forbidden at Job creation.
+  # Batch Jobs — Kaniko build Jobs.
+  # PHASE 3 TODO: strip — moved to per-tenant RoleBinding.
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]
 
   # Ingresses (Traefik on k3s uses networking.k8s.io/v1).
+  # PHASE 3 TODO: keep ONLY `list` for ingresses (catalog enumeration);
+  # everything else moves to per-tenant RoleBinding.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # RoleBinding management (PHASE 1, additive). The api code will use
+  # this verb to create a RoleBinding inside each tenant namespace it
+  # provisions. Granting it cluster-wide is acceptable: a RoleBinding
+  # only ever references the already-existing
+  # `instant-api-tenant-resources` ClusterRole — escalation prevention
+  # in k8s requires a subject to already have all verbs on a binding's
+  # ClusterRole/Role, which the api SA has by virtue of the same
+  # ClusterRole below.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+
+---
+# ClusterRole defining what the api is allowed to do INSIDE a per-tenant
+# namespace (`instant-deploy-*`, `instant-stack-*`).
+#
+# This ClusterRole is NEVER bound via ClusterRoleBinding — only via
+# RoleBindings inside individual namespaces. The api code's
+# setupTenantNamespace() creates the RoleBinding immediately after
+# creating the namespace, so the api can act inside it. A namespace
+# the api did not create is unreachable through this path.
+#
+# Status (Phase 1, 2026-05-29): defined but unused — kept in lockstep
+# with the cluster-wide grant above so Phase 2 (api code change) lands
+# in a known-good RBAC shape.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: instant-api-tenant-resources
+rules:
+  - apiGroups: [""]
+    resources: ["limitranges", "resourcequotas", "services", "secrets", "configmaps", "pods"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
