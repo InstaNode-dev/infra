@@ -1,0 +1,258 @@
+---
+# ─────────────────────────────────────────────────────────────────────────
+# gRPC mTLS scaffolding for the api ↔ provisioner boundary (SEC-PROV-1)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Today the gRPC channel between instant-api (instant ns) and
+# instant-provisioner (instant-infra ns, port 50051) is plaintext. Any
+# pod on the cluster that can route to instant-provisioner.instant-infra
+# can sniff the `x-instant-provisioner-token` metadata header and replay
+# it to impersonate the api — that token then unlocks /db/new /cache/new
+# /nosql/new /queue/new at the provisioner, i.e. cluster-wide control
+# over customer-facing DB provisioning.
+#
+# Mitigation is mTLS with mutual cert verification. Both sides:
+#   - present a cert signed by an internal CA (instant-grpc-ca)
+#   - verify the peer's cert is signed by the same CA
+#   - cross-check the peer's identity (CN) matches the expected service
+#
+# This file ships the CERT-MANAGER SCAFFOLDING ONLY.
+#
+# The code switchover (provisioner/main.go grpc.Creds(...),
+# api/internal/provisioner/client.go grpc.WithTransportCredentials(...))
+# is a follow-up PR pair against the provisioner + api repos, rolled
+# out per the three-phase plan documented at the bottom of this file.
+#
+# Phase 1 (this PR, scaffold only): cert-manager creates the CA + per-pod
+# certs. NOT mounted by either pod yet. NO PRODUCTION BEHAVIOUR CHANGE.
+#
+# Phase 2 (provisioner repo, deferred): provisioner code reads cert+key
+# from /var/run/secrets/grpc-tls/. Server uses tls.RequireAnyClientCert
+# initially (accept both API-with-cert AND API-without-cert) — that way
+# the api can be rolled out independently without a flag-day.
+#
+# Phase 3 (api repo, deferred): api code presents the client cert. Once
+# all api replicas are on the new code, provisioner code flips to
+# tls.RequireAndVerifyClientCert (rejecting plaintext callers).
+#
+# Defence in depth: PROVISIONER_SECRET (constant-time-compared HMAC in
+# interceptor.UnaryAuthInterceptor) stays in place. Token + cert =
+# two-factor.
+#
+# Cert lifetime: 2160h (90 days) with renewBefore=720h (30 days).
+# cert-manager auto-renews; the api + provisioner read the cert from
+# the mounted Secret on each new connection, so a renewal does not
+# require a pod restart for new connections — only existing long-lived
+# connections continue with the old cert until they're recycled by
+# the keepalive timeout (5m).
+# ─────────────────────────────────────────────────────────────────────────
+
+---
+# Self-signed bootstrap Issuer to create the internal CA.
+# Lives in cert-manager namespace (where cert-manager runs).
+# The CA itself becomes a ClusterIssuer below — usable across namespaces.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: instant-grpc-selfsigned-bootstrap
+  namespace: cert-manager
+spec:
+  selfSigned: {}
+
+---
+# The internal CA root cert. Signed by the bootstrap Issuer above.
+# Its key+cert are stored in Secret `instant-grpc-ca-root` in cert-manager ns.
+# 10-year lifetime so we don't need to rotate the root in normal operation.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: instant-grpc-ca-root
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: instant-grpc-ca
+  secretName: instant-grpc-ca-root
+  duration: 87600h   # 10 years
+  renewBefore: 8760h # 1 year
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: instant-grpc-selfsigned-bootstrap
+    kind: Issuer
+    group: cert-manager.io
+
+---
+# ClusterIssuer that uses the root CA above to mint per-service certs.
+# Referenced by the Certificate resources for instant-api and
+# instant-provisioner below.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: instant-grpc-ca
+spec:
+  ca:
+    secretName: instant-grpc-ca-root
+
+---
+# Server certificate for instant-provisioner.
+# DNS SANs:
+#   - the headless Service DNS name(s) the api uses to dial: provisioner
+#     is reachable as `instant-provisioner.instant-infra.svc.cluster.local`
+#   - shortened forms for cluster-local resolution
+# CN is the canonical service name — the api code verifies this.
+#
+# The cert+key land in Secret `instant-provisioner-grpc-tls` in
+# instant-infra ns. The provisioner Deployment mounts it as a volume at
+# /var/run/secrets/grpc-tls/ (added in the Phase 2 provisioner repo PR).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: instant-provisioner-grpc
+  namespace: instant-infra
+spec:
+  secretName: instant-provisioner-grpc-tls
+  duration: 2160h     # 90 days
+  renewBefore: 720h   # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  commonName: instant-provisioner.instant-infra.svc.cluster.local
+  dnsNames:
+    - instant-provisioner
+    - instant-provisioner.instant-infra
+    - instant-provisioner.instant-infra.svc
+    - instant-provisioner.instant-infra.svc.cluster.local
+  usages:
+    - server auth
+    - client auth   # gRPC mTLS is symmetric: server auth for accepting,
+                    # client auth defensive-in-depth for future bidirectional
+                    # health-probe style flows.
+  issuerRef:
+    name: instant-grpc-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
+
+---
+# Client certificate for instant-api.
+# CN is "instant-api" — the provisioner's interceptor will verify this CN
+# against an allowlist (api code change, Phase 2).
+#
+# Lands in Secret `instant-api-grpc-tls` in instant ns. The api Deployment
+# mounts it (Phase 3 api repo PR) at /var/run/secrets/grpc-tls/.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: instant-api-grpc
+  namespace: instant
+spec:
+  secretName: instant-api-grpc-tls
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  commonName: instant-api
+  dnsNames:
+    - instant-api
+    - instant-api.instant
+    - instant-api.instant.svc
+    - instant-api.instant.svc.cluster.local
+  usages:
+    - client auth
+    - server auth   # symmetric — see provisioner cert above
+  issuerRef:
+    name: instant-grpc-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
+
+# ─────────────────────────────────────────────────────────────────────────
+# THREE-PHASE ROLLOUT (operator-coordinated)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# PHASE 1 — this PR. Apply the manifest:
+#
+#   kubectl apply -f infra/k8s/provisioner/mtls.yaml
+#
+#   Verify:
+#     kubectl get clusterissuer instant-grpc-ca
+#     kubectl get certificate -n instant instant-api-grpc
+#     kubectl get certificate -n instant-infra instant-provisioner-grpc
+#     kubectl get secret -n instant instant-api-grpc-tls
+#     kubectl get secret -n instant-infra instant-provisioner-grpc-tls
+#
+#   Expect: every resource Ready=True within ~30s. No pod restart, no
+#   traffic change.
+#
+# PHASE 2 — provisioner repo PR.
+#   In provisioner/main.go, after parsing cfg.ProvisionerSecret:
+#
+#     tlsCfg, err := loadServerTLS(
+#         "/var/run/secrets/grpc-tls/tls.crt",
+#         "/var/run/secrets/grpc-tls/tls.key",
+#         "/var/run/secrets/grpc-tls/ca.crt",
+#     )
+#     if err != nil { slog.Error("provisioner.tls_load_failed"); os.Exit(1) }
+#     tlsCfg.ClientAuth = tls.RequireAnyClientCert  // Phase 2 transitional
+#
+#   And add to grpc.NewServer options:
+#     grpc.Creds(credentials.NewTLS(tlsCfg)),
+#
+#   Mount the Secret on the provisioner Deployment:
+#     volumes:
+#       - name: grpc-tls
+#         secret:
+#           secretName: instant-provisioner-grpc-tls
+#     volumeMounts:
+#       - name: grpc-tls
+#         mountPath: /var/run/secrets/grpc-tls
+#         readOnly: true
+#
+#   With RequireAnyClientCert the api can dial WITHOUT a client cert
+#   (it still works in plaintext until Phase 3). The provisioner now
+#   accepts both plaintext (existing api pods) AND mTLS (new api pods).
+#
+#   Wait: deploy + verify provisioner stays up + existing /db/new etc.
+#   keep working.
+#
+# PHASE 3 — api repo PR.
+#   In api/internal/provisioner/client.go NewClient(), replace
+#   `grpc.WithTransportCredentials(insecure.NewCredentials())` with:
+#
+#     creds, err := loadClientTLS(
+#         "/var/run/secrets/grpc-tls/tls.crt",
+#         "/var/run/secrets/grpc-tls/tls.key",
+#         "/var/run/secrets/grpc-tls/ca.crt",
+#         "instant-provisioner.instant-infra.svc.cluster.local", // serverName
+#     )
+#     if err != nil { return nil, nil, fmt.Errorf("provisioner.tls: %w", err) }
+#     grpc.WithTransportCredentials(creds),
+#
+#   Mount the Secret on the api Deployment:
+#     volumes:
+#       - name: grpc-tls
+#         secret: { secretName: instant-api-grpc-tls }
+#     volumeMounts:
+#       - { name: grpc-tls, mountPath: /var/run/secrets/grpc-tls, readOnly: true }
+#
+#   Roll the api. Verify every replica connects via mTLS.
+#
+# PHASE 4 — provisioner flag-day.
+#   Switch provisioner's `tls.RequireAnyClientCert` to
+#   `tls.RequireAndVerifyClientCert`, then in the auth interceptor cross-
+#   check that `info.AuthInfo.(credentials.TLSInfo).State.VerifiedChains[0][0]
+#   .Subject.CommonName == "instant-api"` (allowlist). Re-deploy provisioner.
+#   Plaintext callers now get rejected at TLS handshake.
+#
+# ROLLBACK between phases:
+#   - Phase 1 → 0: kubectl delete -f infra/k8s/provisioner/mtls.yaml. No pod
+#     restart needed.
+#   - Phase 2 → 1: revert the provisioner code PR + redeploy. Manifest
+#     stays applied.
+#   - Phase 3 → 2: revert the api code PR + redeploy. Provisioner accepts
+#     plaintext via RequireAnyClientCert.
+#   - Phase 4 → 3: revert provisioner verify-flag PR + redeploy.
+#
+# ─────────────────────────────────────────────────────────────────────────
