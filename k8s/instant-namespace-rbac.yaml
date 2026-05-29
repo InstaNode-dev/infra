@@ -1,0 +1,42 @@
+---
+# Role granting the instant-api ServiceAccount the minimum permissions
+# it needs in the `instant` namespace itself (where the api pod runs).
+#
+# Today: read the ghcr-pull source Secret that api/internal/providers/
+# compute/k8s/client.go:1574 reads (the encrypted DB-credential secret +
+# the GHCR pull-image secret) so they can be copied into each per-tenant
+# namespace at deploy time.
+#
+# Before SEC-INFRA-1 the api had cluster-wide `secrets: [get,list,watch]`
+# which trivially covered this. After the cluster-wide grant was removed,
+# this Role is what keeps `instant` ns secret-reads working.
+#
+# Scope: only the verbs needed (get/list, no create/delete/watch). The
+# api does NOT need to mutate `instant` ns secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: instant-api-instant-secrets-reader
+  namespace: instant
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: instant-api-instant-secrets-reader
+  namespace: instant
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: instant-api-instant-secrets-reader
+subjects:
+  - kind: ServiceAccount
+    name: instant-api
+    namespace: instant
