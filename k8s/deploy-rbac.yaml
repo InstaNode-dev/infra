@@ -19,7 +19,7 @@ rules:
   # Namespaces: create (for new deploys) and delete (for teardown).
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "list", "create", "delete"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
 
   # Core workload resources inside each deploy namespace.
   - apiGroups: [""]
