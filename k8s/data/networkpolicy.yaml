@@ -1,0 +1,206 @@
+---
+# Data-tier ingress NetworkPolicy.
+#
+# Closes SEC-INFRA FINDING-8 (CWE-668, P3) from /tmp/qa-session/shared/SEC-INBOX.md.
+#
+# Before this file landed, `k8s/data/{postgres-customers,redis-provision,mongodb,nats}.yaml`
+# had NO ingress NetworkPolicy. Ingress was gated only at the *caller* egress
+# (provisioner/migrator NetPols). One-way enforcement means any compromised
+# in-cluster pod with no egress policy of its own could reach 5432/6379/27017/4222
+# directly without traversing the provisioner.
+#
+# This policy enforces the ingress side: only the four legitimate callers
+# may reach each data-tier pod's listening port. Anything else is blocked by
+# the default-deny implicit in NetworkPolicy semantics (selecting a pod with
+# any policy switches it to deny-by-default for that direction).
+#
+# Legitimate ingress to instant-data:
+#   1. instant-provisioner (instant-infra)   — Provision/Deprovision, StorageBytes
+#   2. instant-migrator    (instant-infra)   — CopyData + Verify on resource migrations
+#   3. instant-worker      (instant-infra)   — quota_infra storage tick (read-only INFO/dbStats/pg_database_size)
+#   4. instant-nats-proxy  (instant)         — only for NATS port 4222 (client-facing fan-out)
+#
+# NetworkPolicy is additive. If a new caller is added (e.g. dashboard for a
+# read-only stat endpoint), add it here AND audit the corresponding egress
+# NetPol on the caller side.
+#
+# Apply via: kubectl apply -f k8s/data/networkpolicy.yaml -n instant-data
+# (per `infra/k8s/APPLY-CHECKLIST.md`, NEVER `kubectl apply -f infra/k8s/app.yaml`).
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-customers-ingress
+  namespace: instant-data
+  labels:
+    app.kubernetes.io/component: data
+    app.kubernetes.io/managed-by: instant-infra
+  annotations:
+    sec.instanode.dev/finding: SEC-INFRA-FINDING-8
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres-customers
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # provisioner — Provision/Deprovision + StorageBytes
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-provisioner
+        # migrator — CopyData + Verify on resource migrations
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-migrator
+        # worker — quota_infra storage tick (pg_database_size reads)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-worker
+      ports:
+        - port: 5432
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-provision-ingress
+  namespace: instant-data
+  labels:
+    app.kubernetes.io/component: data
+    app.kubernetes.io/managed-by: instant-infra
+  annotations:
+    sec.instanode.dev/finding: SEC-INFRA-FINDING-8
+spec:
+  podSelector:
+    matchLabels:
+      app: redis-provision
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-provisioner
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-migrator
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-worker
+      ports:
+        - port: 6379
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongodb-ingress
+  namespace: instant-data
+  labels:
+    app.kubernetes.io/component: data
+    app.kubernetes.io/managed-by: instant-infra
+  annotations:
+    sec.instanode.dev/finding: SEC-INFRA-FINDING-8
+spec:
+  podSelector:
+    matchLabels:
+      app: mongodb
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-provisioner
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-migrator
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-worker
+      ports:
+        - port: 27017
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nats-ingress
+  namespace: instant-data
+  labels:
+    app.kubernetes.io/component: data
+    app.kubernetes.io/managed-by: instant-infra
+  annotations:
+    sec.instanode.dev/finding: SEC-INFRA-FINDING-8
+spec:
+  podSelector:
+    matchLabels:
+      app: nats
+  policyTypes:
+    - Ingress
+  ingress:
+    # NATS client port 4222 — accessible to provisioner, worker, AND
+    # the instant-nats-proxy (the only legitimate client-facing fan-out
+    # path; sits in `instant` namespace).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-provisioner
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-worker
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant
+          podSelector:
+            matchLabels:
+              app: instant-nats-proxy
+      ports:
+        - port: 4222
+          protocol: TCP
+    # NATS monitoring port 8222 — only worker's real_prober probes here.
+    # (provisioner does not hit this port.)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant-infra
+          podSelector:
+            matchLabels:
+              app: instant-worker
+      ports:
+        - port: 8222
+          protocol: TCP
