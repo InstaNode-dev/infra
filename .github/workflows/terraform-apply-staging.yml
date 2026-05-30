@@ -69,6 +69,19 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
+      - name: Verify operator secrets are set
+        run: |
+          missing=""
+          [ -z "${CLOUDFLARE_API_TOKEN}" ]    && missing="${missing} CLOUDFLARE_API_TOKEN"
+          [ -z "${AWS_ACCESS_KEY_ID}" ]       && missing="${missing} TF_STATE_R2_ACCESS_KEY_ID"
+          [ -z "${AWS_SECRET_ACCESS_KEY}" ]   && missing="${missing} TF_STATE_R2_SECRET_ACCESS_KEY"
+          [ -z "${CF_ACCOUNT_ID}" ]           && missing="${missing} CF_ACCOUNT_ID"
+          if [ -n "${missing}" ]; then
+            echo "::error::Operator action required — these repo secrets are not set:${missing}"
+            echo "::error::See https://github.com/InstaNode-dev/infra/blob/master/terraform/cloudflare/README.md#bootstrap-one-time"
+            exit 1
+          fi
+
       - name: terraform init
         run: |
           terraform init \
