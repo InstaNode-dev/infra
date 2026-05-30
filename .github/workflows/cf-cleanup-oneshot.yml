@@ -45,12 +45,20 @@ jobs:
           CF_ACCT:    ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           set -uo pipefail
+          # 2026-05-30 third try: both Bearer and X-Auth-Key returned
+          # "Invalid format" errors (6111 / 6103). Strip all whitespace from
+          # the secret values — most common cause is a trailing newline from
+          # `gh secret set ... < file.txt` where file.txt had a final \n.
+          CF_TOKEN=$(printf '%s' "${CF_TOKEN:-}" | tr -d '[:space:]"\047')
+          CF_API_KEY=$(printf '%s' "${CF_API_KEY:-}" | tr -d '[:space:]"\047')
+          CF_EMAIL=$(printf '%s' "${CF_EMAIL:-}" | tr -d '[:space:]"\047')
+          CF_ACCT=$(printf '%s' "${CF_ACCT:-}" | tr -d '[:space:]"\047')
+          # Debug breadcrumbs (lengths only — never the values).
+          echo "secret-presence: CF_TOKEN=${#CF_TOKEN}ch CF_API_KEY=${#CF_API_KEY}ch CF_EMAIL=${#CF_EMAIL}ch CF_ACCT=${#CF_ACCT}ch"
           if [ -z "${CF_ACCT}" ]; then echo "::error::CF_ACCOUNT_ID secret missing"; exit 1; fi
           # Auth-scheme detection: CF supports two — Bearer (modern API tokens)
-          # OR X-Auth-Email + X-Auth-Key (legacy global API key). First dry-run
-          # of this workflow hit code 6111 "Invalid format for Authorization
-          # header" with the Bearer scheme, suggesting CLOUDFLARE_API_TOKEN is
-          # actually a legacy global key. Try Bearer first, fall back to legacy.
+          # OR X-Auth-Email + X-Auth-Key (legacy global API key). Try Bearer
+          # first, fall back to legacy on auth-format errors.
           echo "--- attempting Bearer auth (modern API tokens) ---"
           if [ -n "${CF_TOKEN}" ]; then
             BEARER_CODE=$(curl -sS -o /tmp/cf_bearer.json -w "%{http_code}" \
