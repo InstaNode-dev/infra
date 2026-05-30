@@ -1,0 +1,110 @@
+---
+# infra — CF Containers deploy for staging via wrangler.
+#
+# APPROVAL MODEL: workflow_dispatch ONLY for the first ~10 runs (manual
+# verification). After staging stabilizes, can be promoted to auto-run on
+# merge to master (controlled by the `auto_deploy` input).
+#
+# Production does NOT use this workflow — see the eventual
+# production-deploy.yml when the prod target is settled.
+#
+# Security: all GHA expressions consumed in run: blocks are wrapped
+# through env: to prevent script injection.
+
+name: wrangler-deploy-staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Which service to deploy (or "all")'
+        required: true
+        type: choice
+        options:
+          - all
+          - api
+          - worker
+          - provisioner
+          - pg-platform
+          - pg-customers
+          - mongodb
+          - redis-provision
+          - nats
+      confirm:
+        description: 'Type DEPLOY-STAGING to confirm'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wrangler-deploy-staging-${{ inputs.service }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: confirm-input guard
+    runs-on: ubuntu-latest
+    env:
+      CONFIRM_INPUT: ${{ inputs.confirm }}
+    steps:
+      - name: Reject if confirm phrase wrong
+        run: |
+          if [ "${CONFIRM_INPUT}" != "DEPLOY-STAGING" ]; then
+            echo "::error::confirm must be exactly 'DEPLOY-STAGING'"
+            exit 1
+          fi
+
+  deploy:
+    name: deploy ${{ inputs.service }}
+    needs: guard
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT_ID:        ${{ secrets.CF_ACCOUNT_ID }}
+      SERVICE_INPUT:        ${{ inputs.service }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install wrangler
+        run: npm install -g wrangler@latest
+
+      - name: Validate service name
+        run: |
+          # Whitelist enforced — never embed user input into shell paths
+          # without validating it matches a known service.
+          case "${SERVICE_INPUT}" in
+            all|api|worker|provisioner|pg-platform|pg-customers|mongodb|redis-provision|nats) : ;;
+            *)
+              echo "::error::Unknown service: ${SERVICE_INPUT}"
+              exit 1
+              ;;
+          esac
+
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          if [ "${SERVICE_INPUT}" = "all" ]; then
+            SERVICES="api worker provisioner pg-platform pg-customers mongodb redis-provision nats"
+          else
+            SERVICES="${SERVICE_INPUT}"
+          fi
+          for svc in $SERVICES; do
+            echo "::group::deploying $svc"
+            cd "infra/wrangler/$svc"
+            wrangler deploy --env staging
+            cd - >/dev/null
+            echo "::endgroup::"
+          done
+
+      - name: Reminder
+        run: |
+          echo "::notice::STAGING DEPLOY COMPLETE."
+          echo "::notice::Verify with: curl https://api.staging.instanode.dev/healthz"
+          echo "::notice::Note: stateful containers (pg-*/mongodb/redis-*/nats) have ephemeral disk."

@@ -1,0 +1,170 @@
+---
+# infra — Terraform fmt + validate + plan for CF resources.
+#
+# Runs on every push to master and on PRs touching terraform/**.
+# Plan is read-only. Apply is split into per-env manual workflows
+# (terraform-apply-staging.yml, terraform-apply-production.yml).
+# This file NEVER applies — see those workflows for the apply path.
+#
+# Posts the plan diff as a PR comment so reviewers see what apply
+# would do without granting CI apply rights.
+#
+# Security note: all GHA expressions consumed in run: blocks are
+# referenced through env vars to prevent script injection.
+
+name: terraform
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform*.yml'
+  pull_request:
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform*.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write   # for the plan comment
+
+concurrency:
+  group: terraform-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_VERSION: '1.9.8'
+  TF_IN_AUTOMATION: 'true'
+
+jobs:
+  fmt-validate:
+    name: fmt + validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform/cloudflare
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive
+
+      - name: terraform init (backend-bypassed)
+        run: terraform init -backend=false
+
+      - name: terraform validate
+        run: terraform validate -no-color
+
+  plan:
+    name: plan (${{ matrix.env }})
+    needs: fmt-validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [staging, production]
+    defaults:
+      run:
+        working-directory: terraform/cloudflare
+    # CF creds + state-backend creds passed in via env, not inlined in run:.
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      AWS_ACCESS_KEY_ID:     ${{ secrets.TF_STATE_R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_R2_SECRET_ACCESS_KEY }}
+      AWS_REGION: 'auto'
+      CF_ACCOUNT_ID:    ${{ secrets.CF_ACCOUNT_ID }}
+      TF_ENV:           ${{ matrix.env }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Verify operator secrets are set
+        # Bootstrap chicken-and-egg: plan needs CF + R2-HMAC creds, but
+        # those are operator-only one-time setup (see README §Bootstrap).
+        # Without this guard the failure mode is a cryptic AWS-IAM stack
+        # trace from `terraform init`. With it, the error is one line
+        # pointing at the README and the exact missing variable names.
+        run: |
+          missing=""
+          [ -z "${CLOUDFLARE_API_TOKEN}" ]    && missing="${missing} CLOUDFLARE_API_TOKEN"
+          [ -z "${AWS_ACCESS_KEY_ID}" ]       && missing="${missing} TF_STATE_R2_ACCESS_KEY_ID"
+          [ -z "${AWS_SECRET_ACCESS_KEY}" ]   && missing="${missing} TF_STATE_R2_SECRET_ACCESS_KEY"
+          [ -z "${CF_ACCOUNT_ID}" ]           && missing="${missing} CF_ACCOUNT_ID"
+          if [ -n "${missing}" ]; then
+            echo "::error::Operator action required — these repo secrets are not set:${missing}"
+            echo "::error::See https://github.com/InstaNode-dev/infra/blob/master/terraform/cloudflare/README.md#bootstrap-one-time"
+            exit 1
+          fi
+          echo "all 4 operator secrets present"
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="endpoints={s3=\"https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com\"}" \
+            -backend-config="workspace_key_prefix=${TF_ENV}"
+
+      - name: terraform workspace select-or-create
+        run: terraform workspace select "${TF_ENV}" 2>/dev/null || terraform workspace new "${TF_ENV}"
+
+      - name: terraform plan
+        id: plan
+        run: |
+          set +e
+          terraform plan \
+            -var-file="${TF_ENV}.auto.tfvars" \
+            -no-color \
+            -out=tfplan.bin \
+            -detailed-exitcode 2>&1 | tee /tmp/plan.out
+          ec=${PIPESTATUS[0]}
+          echo "exitcode=${ec}" >> "$GITHUB_OUTPUT"
+          # 0 = no changes, 2 = changes, 1 = error
+          [ "${ec}" -eq 1 ] && exit 1 || exit 0
+
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          PLAN_ENV:  ${{ matrix.env }}
+          PLAN_CODE: ${{ steps.plan.outputs.exitcode }}
+          RUN_ID:    ${{ github.run_id }}
+        with:
+          script: |
+            const fs = require('fs');
+            let plan = fs.readFileSync('/tmp/plan.out', 'utf8');
+            if (plan.length > 60000) {
+              plan = plan.slice(0, 60000) + '\n\n... (truncated; full plan in job log)';
+            }
+            const env  = process.env.PLAN_ENV;
+            const code = process.env.PLAN_CODE;
+            const verdict = code === '0' ? '✅ no changes'
+                          : code === '2' ? '🟡 changes present — review before manual apply'
+                          : '❌ plan failed';
+            const body = [
+              `### Terraform plan — \`${env}\``,
+              verdict,
+              '',
+              '<details><summary>plan output</summary>',
+              '',
+              '```hcl',
+              plan,
+              '```',
+              '',
+              '</details>',
+              '',
+              `_Posted by terraform.yml run ${process.env.RUN_ID}. Apply requires manual trigger of terraform-apply-${env}.yml._`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              body,
+            });

@@ -1,0 +1,30 @@
+# mongodb — per-tenant Mongo in a CF Container (staging).
+
+name = "instanode-mongodb"
+main = "src/worker.ts"
+compatibility_date = "2026-05-30"
+
+[env.staging]
+name = "instanode-mongodb-staging"
+routes = [
+  { pattern = "mongo-*.staging.instanode.dev/*", custom_domain = true },
+]
+
+[[env.staging.containers]]
+class_name    = "MongoContainer"
+# Custom image — wraps mongo:7 with staging-bootstrap + healthcheck.
+image         = "ghcr.io/instanode-dev/instant-mongodb:staging"
+max_instances = 10
+instance_type = "standard"
+
+[[env.staging.durable_objects.bindings]]
+name       = "MONGO_CONTAINER"
+class_name = "MongoContainer"
+
+[[env.staging.migrations]]
+tag                = "v1"
+new_sqlite_classes = ["MongoContainer"]
+
+[env.staging.observability]
+enabled            = true
+head_sampling_rate = 1.0
