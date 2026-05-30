@@ -1,0 +1,27 @@
+# TF state — lives in R2 backend, never in repo.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# Per-environment variable files — committable ONLY if they contain
+# no secrets. As of bootstrap there are no secrets in any tfvars (auth
+# is via env vars), so we DO commit the .auto.tfvars files. Below
+# excludes only the local ad-hoc ones.
+*.local.tfvars
+*.local.auto.tfvars
+
+# Operator-local overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Plan outputs (often contain post-apply secret values)
+*.tfplan
+*.tfplan.bin
+
+# crash logs from the provider
+crash.log
+crash.*.log
