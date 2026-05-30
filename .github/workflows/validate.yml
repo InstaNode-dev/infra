@@ -24,13 +24,14 @@ name: validate
 on:
   push:
     branches: [master]
-    paths:
-      - 'k8s/**'
-      - '.github/workflows/**'
   pull_request:
-    paths:
-      - 'k8s/**'
-      - '.github/workflows/**'
+  # 2026-05-30: Path filters removed. Branch protection requires
+  # "Lint + schema-check k8s manifests" on every PR, but the old filters
+  # only fired on k8s/** or .github/workflows/** changes. PRs touching
+  # newrelic/, prometheus-rules.yaml, observability/, etc. would never
+  # trigger the workflow → the required check would never report →
+  # the merge would block forever. Run on every PR; the yamllint/
+  # kubeconform steps are cheap and only complain on genuine errors.
   workflow_dispatch:
 
 jobs:
