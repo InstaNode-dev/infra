@@ -48,7 +48,7 @@ resource "cloudflare_dns_record" "staging_wildcard" {
   # regardless of what's here. A 404 sink is intentional — any unrouted
   # subdomain hits CF's default 404 page.
   content = local.staging_stem
-  ttl     = 1
+  ttl     = 60
   proxied = true
   comment = "wildcard for per-tenant CF Container services in staging; routed via cloudflare_workers_route below"
 }
@@ -70,7 +70,7 @@ resource "cloudflare_dns_record" "staging_deployment_wildcard" {
   name    = "*.deployment.${local.staging_stem}"
   type    = "CNAME"
   content = "deployment.${local.staging_stem}"
-  ttl     = 1
+  ttl     = 60
   proxied = true
   comment = "wildcard for /deploy/new staging apps (mirrors prod *.deployment.instanode.dev)"
 }
@@ -83,7 +83,7 @@ resource "cloudflare_dns_record" "staging_deployment_anchor" {
   name    = "deployment.${local.staging_stem}"
   type    = "AAAA"
   content = "100::" # IPv6 discard prefix — never reachable; CF proxied front-end terminates
-  ttl     = 1
+  ttl     = 60
   proxied = true
   comment = "anchor for deployment wildcard CNAME (CF requires a real record at the parent)"
 }
@@ -102,7 +102,7 @@ resource "cloudflare_dns_record" "staging_webhook" {
   name    = "webhook.${local.staging_stem}"
   type    = "AAAA"
   content = "100::" # placeholder; CF orange-cloud handles routing
-  ttl     = 1
+  ttl     = 60
   proxied = true
   comment = "staging /webhook/new receiver subdomain"
 }
@@ -122,7 +122,7 @@ resource "cloudflare_dns_record" "staging_dashboard" {
   name    = "dashboard.${local.staging_stem}"
   type    = "CNAME"
   content = "instanode-dashboard-staging.pages.dev" # set after dashboard Pages project is created
-  ttl     = 1
+  ttl     = 60
   proxied = true
   comment = "staging dashboard — QA-only; D-5 keeps prod dashboard off Pages"
 }

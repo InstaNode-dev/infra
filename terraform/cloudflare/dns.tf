@@ -1,14 +1,12 @@
 # DNS records under management.
 #
 # Pre-cutover ritual (D-3): TTL must be 60s for ≥48h BEFORE any cut.
-# That ONLY applies to grey-cloud (proxied=false) records — CF requires
-# proxied=true records to have ttl=1 (CF manages TTL internally; setting
-# 60 returns a 400 "ttl must be set to 1 when `proxied` is true").
+# Setting it that low here means terraform plan/apply itself satisfies
+# the pre-step the first time we touch the record.
 #
-# `proxied = true` = CF orange-cloud (ttl=1); `false` = grey-cloud,
-# DNS only (ttl=60 for cutover ramp). Today: marketing apex is orange
-# (Phase 0 baseline), api is grey (becomes orange in Phase 4 — flip
-# both the proxied flag AND ttl=60→1 in that phase's PR).
+# `proxied = true` = CF orange-cloud; `false` = grey-cloud (DNS only, no
+# proxy). Today: marketing apex is orange (Phase 0 baseline), api is grey
+# (becomes orange in Phase 4 — flip this flag in that phase's PR).
 
 locals {
   marketing_origin = "instanode-web.pages.dev" # set per environment in staging.tfvars / production.tfvars after Pages project is created
@@ -20,7 +18,7 @@ resource "cloudflare_dns_record" "apex" {
   name    = var.zone_name
   type    = "CNAME"
   content = local.marketing_origin
-  ttl     = 1
+  ttl     = 60
   proxied = true
   comment = "marketing apex; CNAME-flattened to Pages project"
 }
@@ -30,7 +28,7 @@ resource "cloudflare_dns_record" "www" {
   name    = "www.${var.zone_name}"
   type    = "CNAME"
   content = var.zone_name
-  ttl     = 1
+  ttl     = 60
   proxied = true
   comment = "www → apex redirect handled by CF page rule"
 }
@@ -51,7 +49,7 @@ resource "cloudflare_dns_record" "staging" {
   name    = "staging.${var.zone_name}"
   type    = "CNAME"
   content = "instant-staging.${var.zone_name}.cdn.cloudflare.net" # Pages preview hostname; replaced after Pages project is up
-  ttl     = 1
+  ttl     = 60
   proxied = true
   comment = "staging mirror per D-2"
 }

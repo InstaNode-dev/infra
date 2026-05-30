@@ -38,8 +38,7 @@ env:
   TF_VERSION: '1.9.8'
   TF_IN_AUTOMATION: 'true'
   TF_ENV: 'production'
-  CLOUDFLARE_EMAIL:      ${{ secrets.CLOUDFLARE_EMAIL }}
-  CLOUDFLARE_API_KEY:    ${{ secrets.CLOUDFLARE_API_KEY }}
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
   AWS_ACCESS_KEY_ID:     ${{ secrets.TF_STATE_R2_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_R2_SECRET_ACCESS_KEY }}
   AWS_REGION: 'auto'
@@ -109,8 +108,7 @@ jobs:
       - name: Verify operator secrets are set
         run: |
           missing=""
-          [ -z "${CLOUDFLARE_EMAIL}" ]        && missing="${missing} CLOUDFLARE_EMAIL"
-          [ -z "${CLOUDFLARE_API_KEY}" ]      && missing="${missing} CLOUDFLARE_API_KEY"
+          [ -z "${CLOUDFLARE_API_TOKEN}" ]    && missing="${missing} CLOUDFLARE_API_TOKEN"
           [ -z "${AWS_ACCESS_KEY_ID}" ]       && missing="${missing} TF_STATE_R2_ACCESS_KEY_ID"
           [ -z "${AWS_SECRET_ACCESS_KEY}" ]   && missing="${missing} TF_STATE_R2_SECRET_ACCESS_KEY"
           [ -z "${CF_ACCOUNT_ID}" ]           && missing="${missing} CF_ACCOUNT_ID"
