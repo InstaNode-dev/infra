@@ -1,0 +1,91 @@
+---
+# infra/k8s/preview/10-quota-template.yaml — Phase 1a (scaffolding only).
+#
+# Per-preview-namespace ResourceQuota + LimitRange template.
+#
+# This file is a TEMPLATE — the provisioning workflow renders it via
+# `envsubst` at provision time with the PR number, e.g.:
+#
+#   PREVIEW_NS=preview-api-pr-123 envsubst < 10-quota-template.yaml | kubectl apply -f -
+#
+# In Phase 1a the workflow only echoes what it WOULD apply; in Phase 1b the
+# echo is swapped for the real apply.
+#
+# Budget rationale (locked from design doc §4 + operator decision):
+#   - 2 CPU cores total / 4 GiB RAM total: enough for api(0.5/512) +
+#     worker(0.25/256) + provisioner(0.25/256) + pg-platform(0.25/256) +
+#     pg-customers(0.25/256) + redis x2 (0.1/64 each) with ~0.4 CPU /
+#     2 GiB headroom for Playwright-driven bursts.
+#   - 8 GiB ephemeral-storage: covers Kaniko build scratch (~3 GiB),
+#     test artifacts, pod logs. The Layer-3 design budgets 20 GiB; 8 GiB
+#     for Phase 1a forces conservative usage until we measure real burn.
+#   - 20 pods max: hard upper bound on accidental fanout (StatefulSet
+#     replica typos, runaway Jobs).
+#
+# LimitRange defaults: 200m CPU request / 256Mi memory request per
+# container. Limits = 2x requests, so a pod that omits resources gets
+# 200m/256Mi requests with 400m/512Mi limits — small enough to fit ~10
+# pods inside the 2-CPU/4-GiB quota.
+#
+# A pod that explicitly sets requests can go higher (up to the
+# per-container max enforced below).
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: preview-quota
+  namespace: ${PREVIEW_NS}
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+    instanode.dev/preview-pr: "${PR_NUMBER}"
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: "4Gi"
+    limits.cpu: "4"
+    limits.memory: "8Gi"
+    requests.ephemeral-storage: "8Gi"
+    limits.ephemeral-storage: "8Gi"
+    pods: "20"
+    persistentvolumeclaims: "4"
+    services: "10"
+    services.loadbalancers: "0"
+    services.nodeports: "0"
+    secrets: "20"
+    configmaps: "20"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: preview-defaults
+  namespace: ${PREVIEW_NS}
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+    instanode.dev/preview-pr: "${PR_NUMBER}"
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "400m"
+        memory: "512Mi"
+        ephemeral-storage: "1Gi"
+      defaultRequest:
+        cpu: "200m"
+        memory: "256Mi"
+        ephemeral-storage: "256Mi"
+      max:
+        cpu: "1"
+        memory: "2Gi"
+        ephemeral-storage: "4Gi"
+      min:
+        cpu: "10m"
+        memory: "16Mi"
+    - type: Pod
+      max:
+        cpu: "2"
+        memory: "4Gi"
+    - type: PersistentVolumeClaim
+      max:
+        storage: "4Gi"
+      min:
+        storage: "100Mi"

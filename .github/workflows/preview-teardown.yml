@@ -1,0 +1,98 @@
+---
+# infra/.github/workflows/preview-teardown.yml — Phase 1a (scaffolding only).
+#
+# Listens for `repository_dispatch` events of type `preview-teardown-from-api`
+# fired when an api PR closes (merged OR closed-unmerged). In Phase 1a this
+# workflow ONLY validates inputs and logs what it would delete — no kubectl
+# calls are made. The CronJob in 20-cron-ttl.yaml is the belt-and-suspenders
+# safety net for missed teardowns.
+#
+# SECURITY: same posture as preview-create.yml — every client_payload field
+# is treated as untrusted, assigned via env:, validated against a strict
+# shape before being used in any kubectl namespace name or check-run POST.
+
+name: preview-teardown
+
+on:
+  repository_dispatch:
+    types: [preview-teardown-from-api]
+  workflow_dispatch:
+    inputs:
+      api_pr:
+        description: 'api PR number (numeric)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Teardown for the same PR should NOT cancel — if a teardown is in
+  # progress and a duplicate fires, we want both to run to completion
+  # (idempotent delete) rather than abort midway.
+  group: preview-teardown-${{ github.event.client_payload.api_pr || inputs.api_pr }}
+  cancel-in-progress: false
+
+jobs:
+  teardown:
+    name: Teardown preview env (Phase 1a — dry-run)
+    runs-on: ubuntu-latest
+    env:
+      API_PR: ${{ github.event.client_payload.api_pr || inputs.api_pr }}
+      PR_ACTION: ${{ github.event.client_payload.action || 'unknown' }}
+      MERGED: ${{ github.event.client_payload.merged || 'unknown' }}
+    steps:
+      - name: Validate inputs (numeric PR)
+        run: |
+          set -euo pipefail
+          case "${API_PR}" in
+            [1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]|[1-9][0-9][0-9][0-9][0-9])
+              ;;
+            *)
+              echo "::error::api_pr must be a positive integer 1-99999, got '${API_PR}'"
+              exit 1
+              ;;
+          esac
+          if [ "${#API_PR}" -gt 5 ]; then
+            echo "::error::api_pr too long: ${#API_PR} chars"
+            exit 1
+          fi
+          # action is a GitHub-controlled enum (opened/closed/synchronize/etc.)
+          # but defensive whitelist regardless.
+          case "${PR_ACTION}" in
+            closed|unknown|merged) ;;
+            *)
+              echo "::warning::unexpected action='${PR_ACTION}' on teardown — continuing anyway"
+              ;;
+          esac
+          echo "inputs OK: api_pr=${API_PR} action=${PR_ACTION} merged=${MERGED}"
+
+      - name: Compute preview namespace name
+        id: ns
+        run: |
+          set -euo pipefail
+          PREVIEW_NS="preview-api-pr-${API_PR}"
+          echo "preview_ns=${PREVIEW_NS}" >> "$GITHUB_OUTPUT"
+          echo "preview namespace to teardown: ${PREVIEW_NS}"
+
+      - name: DRY-RUN what we would delete
+        env:
+          PREVIEW_NS: ${{ steps.ns.outputs.preview_ns }}
+        run: |
+          set -euo pipefail
+          echo "=========================================================="
+          echo "Phase 1a — DRY-RUN. No kubectl calls are made."
+          echo "=========================================================="
+          echo "Would delete namespace: ${PREVIEW_NS}"
+          echo "Would run: kubectl delete namespace ${PREVIEW_NS} --wait=false --ignore-not-found"
+          echo ""
+          echo "Cascade delete would remove:"
+          echo "  - All Deployments, Services, ConfigMaps, Secrets, Ingresses in the namespace"
+          echo "  - The cert-manager Certificate (reflected wildcard TLS Secret rebuilt by reflector on next preview)"
+          echo "  - The api Pod, Worker Pod, Provisioner Pod, pg-platform Pod, pg-customers Pod, Redis Pods"
+          echo "  - The ResourceQuota + LimitRange (re-applied from template on next preview)"
+          echo ""
+          echo "Phase 1b will replace this dry-run with the real kubectl delete."
+          echo "Safety net: 20-cron-ttl.yaml CronJob in preview-system reaps any namespace"
+          echo "older than 72h that this workflow missed."
+          echo "=========================================================="

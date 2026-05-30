@@ -1,0 +1,129 @@
+---
+# infra/k8s/preview/00-rbac.yaml — Phase 1a (scaffolding only).
+#
+# This file declares the ServiceAccount + ClusterRole(s) + ClusterRoleBinding
+# the preview-env GitHub Actions workflow will use to provision and tear down
+# per-PR namespaces. It does NOT itself create or delete any preview namespace.
+#
+# Apply order: this is the FIRST thing the operator applies after merge.
+# Phase 1b will not work until this is live and `kubectl auth can-i create
+# namespaces --as=system:serviceaccount:preview-system:preview-provisioner`
+# returns `yes`.
+#
+# Scope guard: the ClusterRole here grants broad verbs across the preview
+# resource shapes, but the operational guarantee that "only preview-api-pr-*
+# namespaces are touched" is enforced TWO ways:
+#   (1) The Kyverno policy in 02-policies.yaml rejects any namespace create
+#       whose name does not match the preview-api-pr-* prefix when the
+#       request is made by this ServiceAccount.
+#   (2) The provisioning script in the GH Actions workflow has a pre-flight
+#       check that refuses to act on a namespace whose name doesn't match.
+# If Kyverno isn't installed on the cluster, (1) is documented in the runbook
+# as a TODO and (2) is the only guard — see PREVIEW-ENV-RUNBOOK.md.
+#
+# Phase 1a deliberately does NOT bind a Role inside each preview namespace
+# (the inner editor permissions). That binding is created at provisioning
+# time per-namespace in Phase 1b so it tears down with the namespace.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: preview-system
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+    instanode.dev/managed-by: infra-repo
+  annotations:
+    instanode.dev/purpose: "Host the preview-env controller-like infra (TTL CronJob, future webhook receivers). Per-PR previews live in their own preview-api-pr-<N> namespaces, NOT here."
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: preview-provisioner
+  namespace: preview-system
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+  annotations:
+    instanode.dev/purpose: "Used by GitHub Actions to create + delete preview-api-pr-<N> namespaces and the resources within them. Kubeconfig for this SA goes in the infra repo as PREVIEW_KUBECONFIG_B64."
+---
+# ClusterRole — namespace lifecycle for preview previews.
+#
+# Verbs are intentionally broad on `namespaces` so the provisioner can
+# create + label + annotate + delete; the safety bound is name-prefix
+# enforcement via Kyverno (02-policies.yaml) and the workflow's pre-flight.
+# Splitting this into a tighter list (e.g. patch-only) would leave the
+# delete-on-PR-close path unable to do its job.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: preview-namespace-lifecycle
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["resourcequotas", "limitranges"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+---
+# ClusterRole — resources INSIDE a preview namespace.
+#
+# This is bound cluster-wide here so it works against any preview-api-pr-<N>
+# namespace without a separate RoleBinding per-PR. The name-prefix bound
+# is again enforced by Kyverno on the namespace create itself — once a
+# namespace exists with the right name, the editor verbs apply within it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: preview-namespace-editor
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "secrets", "pods", "pods/log", "pods/exec", "persistentvolumeclaims", "serviceaccounts"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates", "certificaterequests"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: preview-provisioner-namespace-lifecycle
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: preview-namespace-lifecycle
+subjects:
+  - kind: ServiceAccount
+    name: preview-provisioner
+    namespace: preview-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: preview-provisioner-namespace-editor
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: preview-namespace-editor
+subjects:
+  - kind: ServiceAccount
+    name: preview-provisioner
+    namespace: preview-system

@@ -1,0 +1,69 @@
+---
+# infra/k8s/preview/02-policies.yaml — Phase 1a (scaffolding only).
+#
+# Kyverno policy: REJECT namespace creates by the preview-provisioner
+# ServiceAccount unless the namespace name starts with `preview-api-pr-`.
+#
+# Why: 00-rbac.yaml grants the SA cluster-wide namespaces/create. That's
+# necessary (you can't scope `create` by name in stock RBAC). Kyverno
+# closes the loop — the SA *can* call the API, but Kyverno will reject
+# any request that would land outside the preview-api-pr-* prefix.
+#
+# Pre-requisite: Kyverno must be installed on do-nyc3-instant-prod. If it
+# is NOT installed, this manifest will fail apply (CRDs missing). The
+# operator runbook (PREVIEW-ENV-RUNBOOK.md) lists the install command.
+# Until Kyverno is up, the workflow script's pre-flight is the only guard.
+#
+# Validation mode: `failurePolicy: Fail` and `validationFailureAction:
+# Enforce` — a Kyverno outage will REJECT preview namespace creates
+# (fail-closed) rather than allow unscoped creates. This is consistent
+# with the layer-3 design's "preview-system flakes shouldn't break prod"
+# stance: a rejected namespace create surfaces as a warn-only check on
+# the PR, never blocks merge (rule 25 + warn-only month-1 decision).
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: preview-ns-name-prefix
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+  annotations:
+    policies.kyverno.io/title: "Preview namespace name prefix guard"
+    policies.kyverno.io/category: "Preview environments"
+    policies.kyverno.io/description: "Reject namespace creates by preview-provisioner unless the name starts with preview-api-pr- — prevents the SA from creating namespaces outside its intended blast radius."
+spec:
+  validationFailureAction: Enforce
+  background: false
+  failurePolicy: Fail
+  rules:
+    - name: enforce-preview-api-pr-prefix
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+            subjects:
+              - kind: ServiceAccount
+                name: preview-provisioner
+                namespace: preview-system
+      validate:
+        message: "Namespaces created by preview-provisioner must be named preview-api-pr-<PR_NUMBER>. Got: '{{ request.object.metadata.name }}'."
+        pattern:
+          metadata:
+            name: "preview-api-pr-*"
+    - name: require-preview-labels
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+            subjects:
+              - kind: ServiceAccount
+                name: preview-provisioner
+                namespace: preview-system
+      validate:
+        message: "Preview namespaces must carry the instanode.dev/preview-pr label so the TTL CronJob can find them."
+        pattern:
+          metadata:
+            labels:
+              instanode.dev/preview-pr: "?*"
