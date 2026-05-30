@@ -74,7 +74,11 @@ jobs:
         working-directory: terraform/cloudflare
     # CF creds + state-backend creds passed in via env, not inlined in run:.
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      # Global Key via EMAIL+KEY env vars (provider uses X-Auth-* headers).
+      # NOT CLOUDFLARE_API_TOKEN — that's Bearer-only and Global Keys fail
+      # Bearer auth on Rulesets / R2 / account-scoped endpoints (9106).
+      CLOUDFLARE_EMAIL:      ${{ secrets.CLOUDFLARE_EMAIL }}
+      CLOUDFLARE_API_KEY:    ${{ secrets.CLOUDFLARE_API_KEY }}
       AWS_ACCESS_KEY_ID:     ${{ secrets.TF_STATE_R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_R2_SECRET_ACCESS_KEY }}
       AWS_REGION: 'auto'
@@ -95,7 +99,8 @@ jobs:
         # pointing at the README and the exact missing variable names.
         run: |
           missing=""
-          [ -z "${CLOUDFLARE_API_TOKEN}" ]    && missing="${missing} CLOUDFLARE_API_TOKEN"
+          [ -z "${CLOUDFLARE_EMAIL}" ]        && missing="${missing} CLOUDFLARE_EMAIL"
+          [ -z "${CLOUDFLARE_API_KEY}" ]      && missing="${missing} CLOUDFLARE_API_KEY"
           [ -z "${AWS_ACCESS_KEY_ID}" ]       && missing="${missing} TF_STATE_R2_ACCESS_KEY_ID"
           [ -z "${AWS_SECRET_ACCESS_KEY}" ]   && missing="${missing} TF_STATE_R2_SECRET_ACCESS_KEY"
           [ -z "${CF_ACCOUNT_ID}" ]           && missing="${missing} CF_ACCOUNT_ID"
@@ -104,7 +109,7 @@ jobs:
             echo "::error::See https://github.com/InstaNode-dev/infra/blob/master/terraform/cloudflare/README.md#bootstrap-one-time"
             exit 1
           fi
-          echo "all 4 operator secrets present"
+          echo "all 5 operator secrets present"
 
       - name: terraform init
         run: |
