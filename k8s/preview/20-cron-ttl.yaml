@@ -1,0 +1,130 @@
+---
+# infra/k8s/preview/20-cron-ttl.yaml — Phase 1a (scaffolding only).
+#
+# Belt-and-suspenders TTL sweeper for preview namespaces.
+#
+# The primary teardown path is the `preview-teardown` GH Actions workflow
+# (fires on PR close). This CronJob exists for the failure modes that path
+# can't cover:
+#   - PR force-closed via the GH UI before the webhook fires.
+#   - GH Actions outage / runner queue starvation prevents teardown.
+#   - Operator forgets to rerun a failed teardown.
+#
+# Behaviour:
+#   - Runs every 6h (4x/day, low cluster overhead).
+#   - Lists all namespaces matching `instanode.dev/preview-pr` label.
+#   - Reads `instanode.dev/created-at` annotation (RFC3339 timestamp).
+#   - If older than 72h, deletes the namespace.
+#   - Phase 1a is DRY-RUN ONLY — the script prints `WOULD DELETE` lines
+#     but never actually calls `kubectl delete`. Phase 1b flips the
+#     `DRY_RUN` env var to `false` after the operator confirms the
+#     dry-run output looks correct over a few cycles.
+#
+# 72h justification: aligns with the design doc's hard ceiling. A long-running
+# infra-rewrite PR that legitimately needs more than 72h can either re-push
+# (the workflow re-creates the env and the 72h clock resets) or apply the
+# label `instanode.dev/preview-keep-alive=true` which the sweeper skips
+# (see the `KEEP_ALIVE` guard in the script).
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: preview-ttl-sweeper
+  namespace: preview-system
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+spec:
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: preview-envs
+            app.kubernetes.io/component: ttl-sweeper
+        spec:
+          serviceAccountName: preview-provisioner
+          restartPolicy: Never
+          containers:
+            - name: sweeper
+              image: bitnami/kubectl:1.31
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "128Mi"
+              env:
+                - name: DRY_RUN
+                  value: "true"
+                - name: MAX_AGE_HOURS
+                  value: "72"
+                - name: LABEL_SELECTOR
+                  value: "instanode.dev/preview-pr"
+                - name: KEEP_ALIVE_LABEL
+                  value: "instanode.dev/preview-keep-alive=true"
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  echo "preview-ttl-sweeper start (dry_run=${DRY_RUN}, max_age_hours=${MAX_AGE_HOURS})"
+                  now_epoch=$(date -u +%s)
+                  max_age_seconds=$(( MAX_AGE_HOURS * 3600 ))
+                  found=0
+                  swept=0
+                  skipped_keep_alive=0
+                  skipped_too_young=0
+                  errors=0
+                  # Stream namespaces matching the preview label and inspect each.
+                  for ns in $(kubectl get ns -l "${LABEL_SELECTOR}" -o jsonpath='{.items[*].metadata.name}'); do
+                    found=$(( found + 1 ))
+                    case "${ns}" in
+                      preview-api-pr-*)
+                        ;;
+                      *)
+                        echo "SKIP ${ns}: name does not match preview-api-pr-* prefix (defensive — should not happen given Kyverno guard)"
+                        continue
+                        ;;
+                    esac
+                    keep_alive=$(kubectl get ns "${ns}" -o jsonpath="{.metadata.labels.instanode\\.dev/preview-keep-alive}" 2>/dev/null || echo "")
+                    if [ "${keep_alive}" = "true" ]; then
+                      echo "SKIP ${ns}: keep-alive label set"
+                      skipped_keep_alive=$(( skipped_keep_alive + 1 ))
+                      continue
+                    fi
+                    created_at=$(kubectl get ns "${ns}" -o jsonpath="{.metadata.annotations.instanode\\.dev/created-at}" 2>/dev/null || echo "")
+                    if [ -z "${created_at}" ]; then
+                      echo "WARN ${ns}: no created-at annotation, falling back to .metadata.creationTimestamp"
+                      created_at=$(kubectl get ns "${ns}" -o jsonpath='{.metadata.creationTimestamp}')
+                    fi
+                    created_epoch=$(date -u -d "${created_at}" +%s 2>/dev/null || echo "0")
+                    if [ "${created_epoch}" = "0" ]; then
+                      echo "ERROR ${ns}: could not parse created_at='${created_at}', skipping"
+                      errors=$(( errors + 1 ))
+                      continue
+                    fi
+                    age_seconds=$(( now_epoch - created_epoch ))
+                    if [ "${age_seconds}" -lt "${max_age_seconds}" ]; then
+                      echo "SKIP ${ns}: age ${age_seconds}s < ${max_age_seconds}s"
+                      skipped_too_young=$(( skipped_too_young + 1 ))
+                      continue
+                    fi
+                    if [ "${DRY_RUN}" = "true" ]; then
+                      echo "WOULD DELETE ${ns}: age ${age_seconds}s >= ${max_age_seconds}s"
+                    else
+                      echo "DELETE ${ns}: age ${age_seconds}s >= ${max_age_seconds}s"
+                      kubectl delete ns "${ns}" --wait=false || errors=$(( errors + 1 ))
+                    fi
+                    swept=$(( swept + 1 ))
+                  done
+                  echo "preview-ttl-sweeper done: found=${found} swept=${swept} skipped_keep_alive=${skipped_keep_alive} skipped_too_young=${skipped_too_young} errors=${errors} dry_run=${DRY_RUN}"
+                  if [ "${errors}" -gt 0 ]; then exit 1; fi

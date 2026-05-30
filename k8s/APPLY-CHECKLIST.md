@@ -221,6 +221,33 @@ production object bytes.
 
 ---
 
+## Preview-env subdirectory (Phase 1a, 2026-05-30)
+
+A new `k8s/preview/` subdir landed for the Layer-3 per-PR ephemeral-env
+scaffolding. Different apply discipline applies:
+
+- `k8s/preview/00-rbac.yaml`, `02-policies.yaml`, `20-cron-ttl.yaml` are
+  the ONLY files in this subdir that the operator applies directly. They
+  install: the `preview-system` namespace + ServiceAccount + ClusterRoles
+  for the per-PR provisioner, a Kyverno ClusterPolicy that name-prefix-
+  guards the SA's namespace creates, and a dry-run TTL CronJob.
+- `k8s/preview/10-quota-template.yaml` is a TEMPLATE (not a direct apply
+  target). The preview-create GH Actions workflow renders it via
+  `envsubst` per-PR. Never `kubectl apply` it directly.
+- The preview subdir is INCLUDED in the validate workflow's yamllint +
+  kubeconform sweep (no path filter), but the `apply.yml` exclude list
+  must skip `k8s/preview/10-quota-template.yaml` (envsubst placeholders
+  break literal apply). RBAC + policies + CronJob remain applyable.
+- Full operator setup, secret minting, and Phase-1a verification steps
+  live in `infra/PREVIEW-ENV-RUNBOOK.md`.
+
+Two operator tasks gate Phase 1b: (a) wildcard A-record
+`*.preview.instanode.dev → <load-balancer-IP>` at Cloudflare, (b)
+cert-manager `ClusterIssuer/letsencrypt-preview-dns01` (DNS-01 — HTTP-01
+doesn't work for wildcards). The runbook has the verification commands.
+
+---
+
 ## Related files
 
 - `README.md` — secrets clobber warning (the same class of bug, but for

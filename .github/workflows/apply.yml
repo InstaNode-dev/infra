@@ -118,6 +118,7 @@ jobs:
             "${K8S_DIR}/app.yaml"
             "${K8S_DIR}/worker/deployment.yaml"
             "${K8S_DIR}/provisioner/deployment.yaml"
+            "${K8S_DIR}/preview/10-quota-template.yaml"
           )
           KEEP=()
           while IFS= read -r f; do

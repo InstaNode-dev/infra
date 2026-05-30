@@ -1,0 +1,175 @@
+---
+# infra/.github/workflows/preview-create.yml — Phase 1a (scaffolding only).
+#
+# Listens for `repository_dispatch` events of type `preview-create-from-api`
+# fired by the api repo's preview-dispatch workflow. In Phase 1a this
+# workflow ONLY validates the dispatched inputs and logs what it would do —
+# no kubectl calls are made. Phase 1b will wire the real provisioning.
+#
+# Status reporting: posts a check-run on the source api PR via the GitHub
+# Checks API. The conclusion is `neutral` for the entire warn-only month —
+# this means the check shows up on the PR and surfaces preview-env state
+# without blocking merge (per operator decision and rule 25's gating
+# discipline). After 200 PRs at <2% flake rate the conclusion will flip
+# to `success`/`failure` and become a required check.
+#
+# Required repo secret (infra):
+#   PREVIEW_CHECKS_TOKEN  fine-grained PAT with `checks: write` on the
+#                         api repo. Used to POST the check-run. Falls back
+#                         to GITHUB_TOKEN — but GITHUB_TOKEN is scoped to
+#                         the infra repo and CANNOT write checks on the
+#                         api repo (cross-repo limitation), so without the
+#                         PAT the check step soft-skips with a warning.
+#
+# SECURITY: every value pulled from `github.event.client_payload.*` is an
+# untrusted input fired by the api repo's workflow. We:
+#   - assign them to `env:` (per security guidance — never interpolate
+#     untrusted into the shell block directly);
+#   - validate the PR number is numeric and the SHA is 7-40 hex chars
+#     before using either in any URL or JSON body;
+#   - reject inputs that don't match the expected shape with an `::error`
+#     and a non-zero exit.
+
+name: preview-create
+
+on:
+  repository_dispatch:
+    types: [preview-create-from-api]
+  workflow_dispatch:
+    inputs:
+      api_pr:
+        description: 'api PR number (numeric)'
+        required: true
+        type: string
+      api_sha:
+        description: 'api PR head SHA (7-40 hex chars)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-create-${{ github.event.client_payload.api_pr || inputs.api_pr }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Plan preview env (Phase 1a — dry-run)
+    runs-on: ubuntu-latest
+    env:
+      API_PR: ${{ github.event.client_payload.api_pr || inputs.api_pr }}
+      API_SHA: ${{ github.event.client_payload.api_sha || inputs.api_sha }}
+      TRIGGER: ${{ github.event.client_payload.trigger || github.event_name }}
+    steps:
+      - name: Validate inputs (numeric PR + hex SHA)
+        run: |
+          set -euo pipefail
+          case "${API_PR}" in
+            [1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]|[1-9][0-9][0-9][0-9][0-9])
+              ;;
+            *)
+              echo "::error::api_pr must be a positive integer 1-99999, got '${API_PR}'"
+              exit 1
+              ;;
+          esac
+          case "${API_SHA}" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+              ;;
+            *)
+              echo "::error::api_sha must be at least 7 lowercase hex chars, got '${API_SHA}'"
+              exit 1
+              ;;
+          esac
+          # Length cap defense: PR numbers > 5 digits aren't realistic, SHAs > 40 aren't valid.
+          if [ "${#API_PR}" -gt 5 ]; then
+            echo "::error::api_pr too long: ${#API_PR} chars"
+            exit 1
+          fi
+          if [ "${#API_SHA}" -gt 40 ]; then
+            echo "::error::api_sha too long: ${#API_SHA} chars"
+            exit 1
+          fi
+          echo "inputs OK: api_pr=${API_PR} api_sha=${API_SHA} trigger=${TRIGGER}"
+
+      - name: Compute preview namespace name
+        id: ns
+        run: |
+          set -euo pipefail
+          PREVIEW_NS="preview-api-pr-${API_PR}"
+          echo "preview_ns=${PREVIEW_NS}" >> "$GITHUB_OUTPUT"
+          echo "preview namespace will be: ${PREVIEW_NS}"
+
+      - name: Checkout infra (for template reference)
+        uses: actions/checkout@v6
+
+      - name: DRY-RUN what we would apply
+        env:
+          PREVIEW_NS: ${{ steps.ns.outputs.preview_ns }}
+          PR_NUMBER: ${{ env.API_PR }}
+        run: |
+          set -euo pipefail
+          echo "=========================================================="
+          echo "Phase 1a — DRY-RUN. No kubectl calls are made."
+          echo "=========================================================="
+          echo "Would create namespace: ${PREVIEW_NS}"
+          echo "Would label: instanode.dev/preview-pr=${PR_NUMBER}"
+          echo "Would annotate: instanode.dev/created-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Would annotate: instanode.dev/api-sha=${API_SHA}"
+          echo "Would annotate: instanode.dev/trigger=${TRIGGER}"
+          echo ""
+          echo "Would render ResourceQuota + LimitRange from template:"
+          if ! command -v envsubst >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq gettext-base
+          fi
+          export PREVIEW_NS PR_NUMBER
+          envsubst < k8s/preview/10-quota-template.yaml
+          echo ""
+          echo "Would (Phase 1b) build image ghcr.io/instanode-dev/instant-api:pr-${PR_NUMBER}-${API_SHA}"
+          echo "Would (Phase 1b) apply data-tier slim variants (pg-platform, pg-customers, redis x2)"
+          echo "Would (Phase 1b) apply api Deployment with initContainer = migrations"
+          echo "Would (Phase 1b) apply Ingress for api.preview-pr-${PR_NUMBER}.preview.instanode.dev"
+          echo "Would (Phase 1b) wait for /healthz on the preview URL to return commit_id=${API_SHA}"
+          echo "=========================================================="
+
+      - name: Post planned-status check on api PR
+        env:
+          CHECKS_TOKEN: ${{ secrets.PREVIEW_CHECKS_TOKEN }}
+          API_SHA_FOR_CHECK: ${{ env.API_SHA }}
+          PR_FOR_CHECK: ${{ env.API_PR }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CHECKS_TOKEN:-}" ]; then
+            echo "::warning::PREVIEW_CHECKS_TOKEN not set — skipping cross-repo check-run post. " \
+              "Provision a fine-grained PAT with checks:write on InstaNode-dev/api to enable PR-side visibility."
+            exit 0
+          fi
+          # Strict shape gate already enforced upstream, but defense-in-depth.
+          case "${API_SHA_FOR_CHECK}" in
+            [0-9a-f]*) ;;
+            *) echo "::error::api_sha failed defensive recheck"; exit 1 ;;
+          esac
+          case "${PR_FOR_CHECK}" in
+            [1-9]*) ;;
+            *) echo "::error::api_pr failed defensive recheck"; exit 1 ;;
+          esac
+          # Phase 1a always reports `neutral` — warn-only. Phase 1c flips
+          # this to success/failure based on real Playwright outcome.
+          payload=$(printf '{"name":"preview-env / status:planned","head_sha":"%s","status":"completed","conclusion":"neutral","output":{"title":"Preview env Phase 1a (scaffolding)","summary":"Phase 1a scaffolding is live. No real preview namespace was created — the workflow ran in dry-run mode. Phase 1b will wire actual provisioning.\\n\\nPR: %s\\nSHA: %s\\nDispatched run: %s"}}' \
+            "${API_SHA_FOR_CHECK}" "${PR_FOR_CHECK}" "${API_SHA_FOR_CHECK}" "${RUN_URL}")
+          echo "Posting check-run to InstaNode-dev/api for SHA=${API_SHA_FOR_CHECK}"
+          http_code=$(curl -sS -o /tmp/checks.out -w '%{http_code}' \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${CHECKS_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/InstaNode-dev/api/check-runs \
+            -d "$payload")
+          echo "check-runs response: HTTP $http_code"
+          cat /tmp/checks.out || true
+          # 201 Created on success. Anything else: soft-warn in Phase 1a.
+          if [ "$http_code" != "201" ]; then
+            echo "::warning::check-runs POST returned $http_code (expected 201). " \
+              "Not failing the dispatch run — Phase 1a is warn-only end-to-end."
+          fi
