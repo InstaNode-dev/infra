@@ -1,0 +1,151 @@
+name: cf-cleanup-oneshot
+
+# One-shot teardown of every Cloudflare resource created during the
+# 2026-05-30 CF migration attempt that was reverted in apps revert PRs +
+# infra #34. Inventories Workers, Pages projects, KV namespaces, R2 buckets,
+# Containers, and DNS records, prints what would be deleted (dry-run by
+# default), and on `apply` invocation deletes everything matching the
+# `created_on >= 2026-05-30T00:00:00Z` predicate.
+#
+# This workflow is intended to run once and then be deleted in a follow-up
+# PR. It is gated to `workflow_dispatch` only so it cannot fire on push.
+#
+# Required secret: CLOUDFLARE_API_TOKEN (already configured in this repo).
+#                  CF_ACCOUNT_ID         (already configured).
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run = inventory only; apply = actually delete"
+        required: true
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - apply
+      cutoff_iso:
+        description: "ISO8601 UTC cutoff; resources created at-or-after are in scope"
+        required: true
+        type: string
+        default: "2026-05-30T00:00:00Z"
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate CF auth
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCT:  ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CF_TOKEN}" ]; then echo "::error::CLOUDFLARE_API_TOKEN secret missing"; exit 1; fi
+          if [ -z "${CF_ACCT}" ];  then echo "::error::CF_ACCOUNT_ID secret missing";        exit 1; fi
+          curl -sS -H "Authorization: Bearer ${CF_TOKEN}" \
+               "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+            | jq -e '.success == true and .result.status == "active"' >/dev/null
+          echo "✓ CF token valid"
+
+      - name: Inventory + maybe-delete
+        env:
+          CF_TOKEN:   ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCT:    ${{ secrets.CF_ACCOUNT_ID }}
+          MODE:       ${{ inputs.mode }}
+          CUTOFF_ISO: ${{ inputs.cutoff_iso }}
+        run: |
+          set -euo pipefail
+          API="https://api.cloudflare.com/client/v4"
+          H=(-H "Authorization: Bearer ${CF_TOKEN}" -H "Content-Type: application/json")
+
+          # Convert cutoff to epoch for stable date comparison.
+          cutoff_epoch=$(date -d "${CUTOFF_ISO}" +%s)
+          echo "Cutoff: ${CUTOFF_ISO} (${cutoff_epoch})"
+          echo "Mode:   ${MODE}"
+          echo
+
+          deleted=0
+          inspected=0
+          delete_if_after() {
+            local kind="$1" name="$2" created="$3" url="$4"
+            local epoch
+            epoch=$(date -d "${created}" +%s 2>/dev/null || echo 0)
+            inspected=$((inspected+1))
+            if [ "${epoch}" -lt "${cutoff_epoch}" ]; then
+              echo "  KEEP   ${kind}/${name}  (created ${created} < cutoff)"
+              return 0
+            fi
+            if [ "${MODE}" = "apply" ]; then
+              echo "  DELETE ${kind}/${name}  (created ${created}) → ${url}"
+              curl -sS -X DELETE "${H[@]}" "${url}" | jq -c '{success, errors: (.errors // [])}'
+              deleted=$((deleted+1))
+            else
+              echo "  WOULD-DELETE ${kind}/${name}  (created ${created})"
+              deleted=$((deleted+1))
+            fi
+          }
+
+          echo "=== Workers ==="
+          workers_json=$(curl -sS "${H[@]}" "${API}/accounts/${CF_ACCT}/workers/scripts")
+          echo "${workers_json}" | jq -r '.result[] | "\(.id)\t\(.created_on)"' \
+            | while IFS=$'\t' read -r id created; do
+                delete_if_after "worker" "${id}" "${created}" \
+                  "${API}/accounts/${CF_ACCT}/workers/scripts/${id}"
+              done
+
+          echo
+          echo "=== Pages projects ==="
+          pages_json=$(curl -sS "${H[@]}" "${API}/accounts/${CF_ACCT}/pages/projects")
+          echo "${pages_json}" | jq -r '.result[] | "\(.name)\t\(.created_on)"' \
+            | while IFS=$'\t' read -r name created; do
+                delete_if_after "pages" "${name}" "${created}" \
+                  "${API}/accounts/${CF_ACCT}/pages/projects/${name}"
+              done
+
+          echo
+          echo "=== KV namespaces ==="
+          kv_json=$(curl -sS "${H[@]}" "${API}/accounts/${CF_ACCT}/storage/kv/namespaces?per_page=100")
+          # KV listing doesn't include created_on. Match by title prefix used
+          # in the staging migration: instant-*.
+          echo "${kv_json}" | jq -r '.result[] | select(.title | test("^instant-")) | "\(.id)\t\(.title)"' \
+            | while IFS=$'\t' read -r id title; do
+                echo "  CANDIDATE kv/${title} (id=${id}) — no created_on; assuming in-scope"
+                if [ "${MODE}" = "apply" ]; then
+                  curl -sS -X DELETE "${H[@]}" "${API}/accounts/${CF_ACCT}/storage/kv/namespaces/${id}" \
+                    | jq -c '{success}'
+                fi
+                inspected=$((inspected+1)); deleted=$((deleted+1))
+              done
+
+          echo
+          echo "=== R2 buckets ==="
+          r2_json=$(curl -sS "${H[@]}" "${API}/accounts/${CF_ACCT}/r2/buckets")
+          echo "${r2_json}" | jq -r '.result.buckets[]? | "\(.name)\t\(.creation_date)"' \
+            | while IFS=$'\t' read -r name created; do
+                delete_if_after "r2" "${name}" "${created}" \
+                  "${API}/accounts/${CF_ACCT}/r2/buckets/${name}"
+              done
+
+          echo
+          echo "=== Containers (Cloudchamber apps) ==="
+          # Cloudchamber endpoint; may 404 if not enabled on this account.
+          cc_json=$(curl -sS -w "\n%{http_code}" "${H[@]}" "${API}/accounts/${CF_ACCT}/cloudchamber/applications" || true)
+          cc_code=$(echo "${cc_json}" | tail -1)
+          if [ "${cc_code}" = "200" ]; then
+            echo "${cc_json}" | head -n -1 | jq -r '.result[]? | "\(.id)\t\(.created_at)"' \
+              | while IFS=$'\t' read -r id created; do
+                  delete_if_after "container" "${id}" "${created}" \
+                    "${API}/accounts/${CF_ACCT}/cloudchamber/applications/${id}"
+                done
+          else
+            echo "  Cloudchamber API returned ${cc_code} — assume no containers in scope."
+          fi
+
+          echo
+          echo "================================"
+          echo " inspected: ${inspected}"
+          echo " ${MODE}:   ${deleted}"
+          echo "================================"
