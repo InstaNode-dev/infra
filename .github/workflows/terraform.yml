@@ -87,6 +87,25 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
+      - name: Verify operator secrets are set
+        # Bootstrap chicken-and-egg: plan needs CF + R2-HMAC creds, but
+        # those are operator-only one-time setup (see README §Bootstrap).
+        # Without this guard the failure mode is a cryptic AWS-IAM stack
+        # trace from `terraform init`. With it, the error is one line
+        # pointing at the README and the exact missing variable names.
+        run: |
+          missing=""
+          [ -z "${CLOUDFLARE_API_TOKEN}" ]    && missing="${missing} CLOUDFLARE_API_TOKEN"
+          [ -z "${AWS_ACCESS_KEY_ID}" ]       && missing="${missing} TF_STATE_R2_ACCESS_KEY_ID"
+          [ -z "${AWS_SECRET_ACCESS_KEY}" ]   && missing="${missing} TF_STATE_R2_SECRET_ACCESS_KEY"
+          [ -z "${CF_ACCOUNT_ID}" ]           && missing="${missing} CF_ACCOUNT_ID"
+          if [ -n "${missing}" ]; then
+            echo "::error::Operator action required — these repo secrets are not set:${missing}"
+            echo "::error::See https://github.com/InstaNode-dev/infra/blob/master/terraform/cloudflare/README.md#bootstrap-one-time"
+            exit 1
+          fi
+          echo "all 4 operator secrets present"
+
       - name: terraform init
         run: |
           terraform init \
