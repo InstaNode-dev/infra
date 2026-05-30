@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — auth_probe_failed [synthetic login loop broken in prod]",
+  "type": "NRQL",
+  "description": "P0 page on ANY occurrence of instant_auth_probe_outcome_total{result=\"fail\"}. The AUTH-004 synthetic prober drives the full browser-shaped login loop against prod every 5 minutes (POST /auth/email/start + OPTIONS/POST /auth/exchange CORS contract + GET /auth/me bearer). A fail outcome means one of: (a) /auth/email/start is returning non-202, (b) /auth/exchange is missing the Access-Control-Allow-Origin or Access-Control-Allow-Credentials response header (the exact regression class that hid prod login broken for ~24h on 2026-05-29), or (c) the probe bearer token rejected at /auth/me. Cross-correlate against the audit_log row written by worker auth_probe_failed (kind=auth_probe_failed, actor='system:auth_probe') AND the structured slog ERROR line auth_probe_failed leg=... reason=... — same content on both surfaces. Source: worker/internal/jobs/auth_probe.go (AuthProbeWorker), metric registered in worker/internal/metrics/metrics.go (AuthProbeOutcomeTotal). Threshold ABOVE 0 with 10m window: two consecutive ticks (one tick = 5min) of fail is unambiguous regression, not flake.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_auth_probe_outcome_total) FROM Metric WHERE metricName = 'instant_auth_probe_outcome_total' AND result = 'fail'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

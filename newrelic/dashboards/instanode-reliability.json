@@ -258,6 +258,51 @@
             ],
             "platformOptions": { "ignoreTimeRange": false }
           }
+        },
+        {
+          "title": "AUTH-004 synthetic prober — outcomes per leg (1h)",
+          "layout": { "column": 1, "row": 25, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_auth_probe_outcome_total) FROM Metric WHERE metricName = 'instant_auth_probe_outcome_total' FACET leg, result TIMESERIES SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "AUTH-004 synthetic prober — fails (last 1h, must be 0)",
+          "layout": { "column": 7, "row": 25, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_auth_probe_outcome_total) AS 'fails' FROM Metric WHERE metricName = 'instant_auth_probe_outcome_total' AND result = 'fail' SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "CRITICAL", "value": 1 }
+            ]
+          }
+        },
+        {
+          "title": "AUTH-004 synthetic prober — P95 latency per leg (1h)",
+          "layout": { "column": 10, "row": 25, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT percentile(instant_auth_probe_latency_seconds, 95) AS 'p95' FROM Metric WHERE metricName = 'instant_auth_probe_latency_seconds' FACET leg TIMESERIES SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
         }
       ]
     }
