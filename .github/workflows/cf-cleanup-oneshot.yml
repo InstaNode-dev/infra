@@ -39,35 +39,67 @@ jobs:
     steps:
       - name: Validate CF auth
         env:
-          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCT:  ${{ secrets.CF_ACCOUNT_ID }}
+          CF_TOKEN:   ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL:   ${{ secrets.CLOUDFLARE_EMAIL }}
+          CF_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CF_ACCT:    ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           set -uo pipefail
-          if [ -z "${CF_TOKEN}" ]; then echo "::error::CLOUDFLARE_API_TOKEN secret missing"; exit 1; fi
-          if [ -z "${CF_ACCT}" ];  then echo "::error::CF_ACCOUNT_ID secret missing";        exit 1; fi
-          # Soft validation: print the response, never gate on it. /user/tokens/verify
-          # needs User:User Details:Read which an account-scoped token won't have, and
-          # a 401 here would falsely fail an otherwise-valid token. The real test is
-          # whether the listing endpoints below return data.
-          echo "--- token verify (informational, may 401 on account-scoped tokens) ---"
-          curl -sS -H "Authorization: Bearer ${CF_TOKEN}" \
-               "https://api.cloudflare.com/client/v4/user/tokens/verify" || true
+          if [ -z "${CF_ACCT}" ]; then echo "::error::CF_ACCOUNT_ID secret missing"; exit 1; fi
+          # Auth-scheme detection: CF supports two — Bearer (modern API tokens)
+          # OR X-Auth-Email + X-Auth-Key (legacy global API key). First dry-run
+          # of this workflow hit code 6111 "Invalid format for Authorization
+          # header" with the Bearer scheme, suggesting CLOUDFLARE_API_TOKEN is
+          # actually a legacy global key. Try Bearer first, fall back to legacy.
+          echo "--- attempting Bearer auth (modern API tokens) ---"
+          if [ -n "${CF_TOKEN}" ]; then
+            BEARER_CODE=$(curl -sS -o /tmp/cf_bearer.json -w "%{http_code}" \
+                 -H "Authorization: Bearer ${CF_TOKEN}" \
+                 "https://api.cloudflare.com/client/v4/accounts/${CF_ACCT}")
+            echo "Bearer http=${BEARER_CODE}"
+            cat /tmp/cf_bearer.json | jq -c '.' 2>/dev/null || cat /tmp/cf_bearer.json
+            if [ "${BEARER_CODE}" = "200" ]; then
+              echo "✓ Bearer auth works; subsequent calls will use it."
+              echo "AUTH_SCHEME=bearer" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          fi
           echo
-          echo "--- account read (the real auth probe) ---"
-          curl -sS -w "\nhttp=%{http_code}\n" -H "Authorization: Bearer ${CF_TOKEN}" \
-               "https://api.cloudflare.com/client/v4/accounts/${CF_ACCT}"
-          echo "(continuing regardless — script tolerates per-endpoint 4xx)"
+          echo "--- attempting legacy X-Auth-Email + X-Auth-Key ---"
+          if [ -z "${CF_EMAIL}" ] || [ -z "${CF_API_KEY}" ]; then
+            echo "::error::Neither Bearer nor legacy auth available (CLOUDFLARE_EMAIL/CLOUDFLARE_API_KEY missing)"
+            exit 1
+          fi
+          LEGACY_CODE=$(curl -sS -o /tmp/cf_legacy.json -w "%{http_code}" \
+               -H "X-Auth-Email: ${CF_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" \
+               "https://api.cloudflare.com/client/v4/accounts/${CF_ACCT}")
+          echo "Legacy http=${LEGACY_CODE}"
+          cat /tmp/cf_legacy.json | jq -c '.' 2>/dev/null || cat /tmp/cf_legacy.json
+          if [ "${LEGACY_CODE}" = "200" ]; then
+            echo "✓ Legacy auth works; subsequent calls will use it."
+            echo "AUTH_SCHEME=legacy" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "::error::Neither Bearer nor legacy auth succeeded against /accounts/${CF_ACCT}"
+          exit 1
 
       - name: Inventory + maybe-delete
         env:
           CF_TOKEN:   ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL:   ${{ secrets.CLOUDFLARE_EMAIL }}
+          CF_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
           CF_ACCT:    ${{ secrets.CF_ACCOUNT_ID }}
           MODE:       ${{ inputs.mode }}
           CUTOFF_ISO: ${{ inputs.cutoff_iso }}
         run: |
           set -uo pipefail   # no -e: tolerate per-endpoint 4xx
           API="https://api.cloudflare.com/client/v4"
-          H=(-H "Authorization: Bearer ${CF_TOKEN}" -H "Content-Type: application/json")
+          # AUTH_SCHEME was exported by the previous step via GITHUB_ENV.
+          if [ "${AUTH_SCHEME:-}" = "bearer" ]; then
+            H=(-H "Authorization: Bearer ${CF_TOKEN}" -H "Content-Type: application/json")
+          else
+            H=(-H "X-Auth-Email: ${CF_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json")
+          fi
 
           # Convert cutoff to epoch for stable date comparison.
           cutoff_epoch=$(date -d "${CUTOFF_ISO}" +%s)
