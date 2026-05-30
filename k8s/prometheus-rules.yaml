@@ -614,3 +614,31 @@ spec:
               upgrade. Find the team in audit_log where audit_kind = 'billing.charge_undeliverable',
               cross-check against the Razorpay dashboard, refund or hand-grant
               the tier.
+
+    # AUTH-004 synthetic prober. Every 5 minutes the worker drives the full
+    # browser-shaped login loop against prod (/auth/email/start +
+    # /auth/exchange CORS contract + /auth/me bearer). Any fail outcome
+    # over a 10-minute window pages — two consecutive ticks of fail is
+    # unambiguous regression, not flake. Mirrors auth-probe-fail.json in
+    # newrelic/alerts/.
+    - name: instant-worker-auth-probe
+      rules:
+        - alert: AuthProbeFail
+          expr: |
+            sum(increase(instant_auth_probe_outcome_total{result="fail"}[10m])) > 0
+          for: 10m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "AUTH-004 synthetic prober fail (login loop broken in prod)"
+            description: |
+              instant_auth_probe_outcome_total{result="fail"} > 0 in 10m.
+              The synthetic prober drives the full browser-shaped login
+              loop against prod every 5 minutes. A fail outcome means one
+              of: /auth/email/start non-202, /auth/exchange missing
+              Access-Control-Allow-Origin / Access-Control-Allow-Credentials
+              (the AUTH-004 regression class), or /auth/me bearer rejected.
+              Cross-correlate against audit_log kind=auth_probe_failed +
+              the worker structured slog ERROR `auth_probe_failed leg=...
+              reason=...`. Source: worker/internal/jobs/auth_probe.go.
