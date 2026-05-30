@@ -1,0 +1,132 @@
+---
+# infra/k8s/preview/30-data-template.yaml — Phase 1b.
+#
+# Slim single-replica pg-platform sidecar for a preview namespace. The api
+# Deployment in 40-api-template.yaml points DATABASE_URL at the in-namespace
+# Service this manifest declares (`postgres-platform.${PREVIEW_NS}.svc`),
+# NEVER at the prod DigitalOcean Managed Postgres (which lives outside the
+# cluster) and NEVER at the shared `postgres-customers` Service in
+# `instant-data` (rule 3 in PREVIEW-ENV-RUNBOOK.md "Hard rules": preview
+# namespaces NEVER reference instant-data Services).
+#
+# Phase 1b scope: ONLY pg-platform (Postgres for the teams/users/resources
+# tables). No pg-customers, no Redis, no Mongo, no NATS. Anything the api
+# tries to do that requires those will 503 — explicit Phase 1c work.
+#
+# `emptyDir` not PVC: a preview env is ephemeral (72h max) and its DB is
+# never read after teardown. PVCs would leak storage on every PR and need
+# a separate sweeper; emptyDir dies with the pod and is rebuilt on
+# namespace re-create.
+#
+# This is a TEMPLATE — `envsubst` substitutes ${PREVIEW_NS}, ${PR_NUMBER},
+# ${PG_PASSWORD} at provision time.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-platform-credentials
+  namespace: ${PREVIEW_NS}
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+    app.kubernetes.io/component: pg-platform
+    instanode.dev/preview-pr: "${PR_NUMBER}"
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: "${PG_PASSWORD}"
+  # The api speaks the URL form below; we ship both keys so the api Deployment
+  # can either reference DATABASE_URL directly or compose it from parts.
+  DATABASE_URL: "postgres://instant:${PG_PASSWORD}@postgres-platform.${PREVIEW_NS}.svc.cluster.local:5432/instant_platform?sslmode=disable"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-platform
+  namespace: ${PREVIEW_NS}
+  labels:
+    app: postgres-platform
+    app.kubernetes.io/part-of: preview-envs
+    app.kubernetes.io/component: pg-platform
+    instanode.dev/preview-pr: "${PR_NUMBER}"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres-platform
+  template:
+    metadata:
+      labels:
+        app: postgres-platform
+        app.kubernetes.io/part-of: preview-envs
+        instanode.dev/preview-pr: "${PR_NUMBER}"
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: pg
+          env:
+            - name: POSTGRES_DB
+              value: instant_platform
+            - name: POSTGRES_USER
+              value: instant
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-platform-credentials
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "instant", "-d", "instant_platform"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "instant", "-d", "instant_platform"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 4
+          # Match the per-container LimitRange max (cpu=1, memory=2Gi) in
+          # 10-quota-template.yaml. Pg under Playwright burst needs more
+          # than the default 200m/256Mi or it stalls under concurrent
+          # connection load.
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+              ephemeral-storage: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+              ephemeral-storage: "2Gi"
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-platform
+  namespace: ${PREVIEW_NS}
+  labels:
+    app: postgres-platform
+    app.kubernetes.io/part-of: preview-envs
+    instanode.dev/preview-pr: "${PR_NUMBER}"
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres-platform
+  ports:
+    - name: pg
+      port: 5432
+      targetPort: 5432

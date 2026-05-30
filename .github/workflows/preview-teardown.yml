@@ -1,15 +1,21 @@
 ---
-# infra/.github/workflows/preview-teardown.yml — Phase 1a (scaffolding only).
+# infra/.github/workflows/preview-teardown.yml — Phase 1b (real teardown,
+# soft-fail when operator prerequisites are missing).
 #
-# Listens for `repository_dispatch` events of type `preview-teardown-from-api`
-# fired when an api PR closes (merged OR closed-unmerged). In Phase 1a this
-# workflow ONLY validates inputs and logs what it would delete — no kubectl
-# calls are made. The CronJob in 20-cron-ttl.yaml is the belt-and-suspenders
-# safety net for missed teardowns.
+# Listens for `repository_dispatch:preview-teardown-from-api` events fired
+# when an api PR closes (merged OR closed-unmerged). Deletes the
+# `preview-api-pr-<N>` namespace; cascade delete removes the api Deployment,
+# pg-platform Deployment, Services, Ingress, ConfigMaps, Secrets,
+# ResourceQuota + LimitRange.
 #
-# SECURITY: same posture as preview-create.yml — every client_payload field
-# is treated as untrusted, assigned via env:, validated against a strict
-# shape before being used in any kubectl namespace name or check-run POST.
+# Belt-and-suspenders: the TTL CronJob in 20-cron-ttl.yaml sweeps any
+# namespace this workflow misses (PR force-closed before webhook, GH
+# Actions outage, etc.) after 72h.
+#
+# Soft-fail when PREVIEW_KUBECONFIG_B64 unset — same posture as
+# preview-create.yml. The TTL sweeper is the safety net.
+#
+# SECURITY: same shape-validation + env: posture as preview-create.yml.
 
 name: preview-teardown
 
@@ -27,15 +33,14 @@ permissions:
   contents: read
 
 concurrency:
-  # Teardown for the same PR should NOT cancel — if a teardown is in
-  # progress and a duplicate fires, we want both to run to completion
-  # (idempotent delete) rather than abort midway.
+  # Teardown for the same PR should NOT cancel — idempotent delete is
+  # safer than aborting midway.
   group: preview-teardown-${{ github.event.client_payload.api_pr || inputs.api_pr }}
   cancel-in-progress: false
 
 jobs:
   teardown:
-    name: Teardown preview env (Phase 1a — dry-run)
+    name: Teardown preview env (Phase 1b)
     runs-on: ubuntu-latest
     env:
       API_PR: ${{ github.event.client_payload.api_pr || inputs.api_pr }}
@@ -57,14 +62,23 @@ jobs:
             echo "::error::api_pr too long: ${#API_PR} chars"
             exit 1
           fi
-          # action is a GitHub-controlled enum (opened/closed/synchronize/etc.)
-          # but defensive whitelist regardless.
           case "${PR_ACTION}" in
             closed|unknown|merged) ;;
             *)
-              echo "::warning::unexpected action='${PR_ACTION}' on teardown — continuing anyway"
+              echo "::warning::unexpected action='${PR_ACTION}' on teardown — normalising to 'unknown'"
+              PR_ACTION="unknown"
               ;;
           esac
+          # MERGED is bool-shaped ("true"/"false"). Normalise anything else so
+          # the check-run summary can't contain attacker-controlled text.
+          case "${MERGED}" in
+            true|false|unknown) ;;
+            *) MERGED="unknown" ;;
+          esac
+          # Persist normalised values for downstream steps (the env: block
+          # above carries the raw payload).
+          echo "PR_ACTION=${PR_ACTION}" >> "$GITHUB_ENV"
+          echo "MERGED=${MERGED}" >> "$GITHUB_ENV"
           echo "inputs OK: api_pr=${API_PR} action=${PR_ACTION} merged=${MERGED}"
 
       - name: Compute preview namespace name
@@ -72,27 +86,131 @@ jobs:
         run: |
           set -euo pipefail
           PREVIEW_NS="preview-api-pr-${API_PR}"
+          case "${PREVIEW_NS}" in
+            preview-api-pr-*) ;;
+            *)
+              echo "::error::computed namespace '${PREVIEW_NS}' does not match preview-api-pr-* prefix"
+              exit 1
+              ;;
+          esac
           echo "preview_ns=${PREVIEW_NS}" >> "$GITHUB_OUTPUT"
           echo "preview namespace to teardown: ${PREVIEW_NS}"
 
-      - name: DRY-RUN what we would delete
+      - name: Soft-check operator prerequisites (kubeconfig secret)
+        id: prereq
+        env:
+          KUBECONFIG_B64: ${{ secrets.PREVIEW_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KUBECONFIG_B64:-}" ]; then
+            echo "::warning::PREVIEW_KUBECONFIG_B64 not set — soft-fail teardown."
+            echo "::warning::If a namespace exists, the TTL CronJob will reap it within 72h."
+            echo "soft_fail=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "soft_fail=false" >> "$GITHUB_OUTPUT"
+
+      - name: Set up kubectl
+        if: steps.prereq.outputs.soft_fail == 'false'
+        uses: azure/setup-kubectl@v5
+        with:
+          version: 'latest'
+
+      - name: Configure kubeconfig from PREVIEW_KUBECONFIG_B64
+        if: steps.prereq.outputs.soft_fail == 'false'
+        env:
+          KUBECONFIG_B64: ${{ secrets.PREVIEW_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.kube"
+          echo "${KUBECONFIG_B64}" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+          kubectl version --client=true
+
+      - name: Delete preview namespace (cascade)
+        if: steps.prereq.outputs.soft_fail == 'false'
         env:
           PREVIEW_NS: ${{ steps.ns.outputs.preview_ns }}
         run: |
           set -euo pipefail
-          echo "=========================================================="
-          echo "Phase 1a — DRY-RUN. No kubectl calls are made."
-          echo "=========================================================="
-          echo "Would delete namespace: ${PREVIEW_NS}"
-          echo "Would run: kubectl delete namespace ${PREVIEW_NS} --wait=false --ignore-not-found"
-          echo ""
-          echo "Cascade delete would remove:"
-          echo "  - All Deployments, Services, ConfigMaps, Secrets, Ingresses in the namespace"
-          echo "  - The cert-manager Certificate (reflected wildcard TLS Secret rebuilt by reflector on next preview)"
-          echo "  - The api Pod, Worker Pod, Provisioner Pod, pg-platform Pod, pg-customers Pod, Redis Pods"
-          echo "  - The ResourceQuota + LimitRange (re-applied from template on next preview)"
-          echo ""
-          echo "Phase 1b will replace this dry-run with the real kubectl delete."
-          echo "Safety net: 20-cron-ttl.yaml CronJob in preview-system reaps any namespace"
-          echo "older than 72h that this workflow missed."
-          echo "=========================================================="
+          # Defensive prefix check before delete — if the input shape is
+          # somehow wrong, we'd rather hit a typo'd ns name than delete
+          # the wrong one.
+          case "${PREVIEW_NS}" in
+            preview-api-pr-*) ;;
+            *)
+              echo "::error::refusing to delete namespace '${PREVIEW_NS}' — not preview-api-pr-* prefix"
+              exit 1
+              ;;
+          esac
+          # --ignore-not-found: a teardown that fires after the TTL CronJob
+          # already reaped is a no-op, not a failure. --wait=false: we
+          # don't need to block CI on the actual finalisation; the
+          # namespace will go away on its own once cascade completes.
+          kubectl delete namespace "${PREVIEW_NS}" \
+            --ignore-not-found=true \
+            --wait=false
+          echo "delete dispatched for ${PREVIEW_NS}"
+
+      - name: Post teardown check on api PR
+        if: always()
+        env:
+          CHECKS_TOKEN: ${{ secrets.PREVIEW_CHECKS_TOKEN }}
+          PR_FOR_CHECK: ${{ env.API_PR }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PREVIEW_NS: ${{ steps.ns.outputs.preview_ns }}
+          SOFT_FAIL: ${{ steps.prereq.outputs.soft_fail }}
+          MERGED_FOR_CHECK: ${{ env.MERGED }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CHECKS_TOKEN:-}" ]; then
+            echo "::warning::PREVIEW_CHECKS_TOKEN not set — skipping cross-repo check-run post."
+            exit 0
+          fi
+          case "${PR_FOR_CHECK}" in
+            [1-9]*) ;;
+            *) echo "::error::api_pr failed defensive recheck"; exit 1 ;;
+          esac
+          # Teardown is a tracking-only check — no head_sha-tied gate because
+          # by the time teardown fires the PR's head SHA is irrelevant. We
+          # still post a check-run for visibility (looks up the PR's head SHA
+          # via the GitHub API).
+          pr_json=$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${CHECKS_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/InstaNode-dev/api/pulls/${PR_FOR_CHECK}" || echo '{}')
+          head_sha=$(echo "${pr_json}" | jq -r '.head.sha // empty')
+          if [ -z "${head_sha}" ]; then
+            echo "::warning::could not look up head SHA for PR ${PR_FOR_CHECK} — skipping check-run post."
+            exit 0
+          fi
+          if [ "${SOFT_FAIL}" = "true" ]; then
+            conclusion="neutral"
+            title="Preview env teardown skipped (operator prerequisite missing)"
+            summary="PREVIEW_KUBECONFIG_B64 not set. TTL CronJob will reap ${PREVIEW_NS} within 72h.\n\nPR: ${PR_FOR_CHECK} (merged=${MERGED_FOR_CHECK})\nDispatched run: ${RUN_URL}"
+          else
+            conclusion="success"
+            title="Preview env torn down"
+            summary="Namespace ${PREVIEW_NS} deletion dispatched (cascade). Idempotent — no-op if already absent.\n\nPR: ${PR_FOR_CHECK} (merged=${MERGED_FOR_CHECK})\nDispatched run: ${RUN_URL}"
+          fi
+          payload=$(jq -n \
+            --arg name "preview-env / teardown" \
+            --arg head_sha "${head_sha}" \
+            --arg conclusion "${conclusion}" \
+            --arg title "${title}" \
+            --arg summary "${summary}" \
+            '{name: $name, head_sha: $head_sha, status: "completed", conclusion: $conclusion, output: {title: $title, summary: $summary}}')
+          echo "Posting teardown check-run (${conclusion}) for PR ${PR_FOR_CHECK} (head ${head_sha})"
+          http_code=$(curl -sS -o /tmp/checks.out -w '%{http_code}' \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${CHECKS_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/InstaNode-dev/api/check-runs \
+            -d "$payload")
+          echo "check-runs response: HTTP $http_code"
+          cat /tmp/checks.out || true
+          if [ "$http_code" != "201" ]; then
+            echo "::warning::check-runs POST returned $http_code (expected 201). Warn-only."
+          fi

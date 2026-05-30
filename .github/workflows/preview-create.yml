@@ -1,34 +1,39 @@
 ---
-# infra/.github/workflows/preview-create.yml — Phase 1a (scaffolding only).
+# infra/.github/workflows/preview-create.yml — Phase 1b (real provisioning,
+# soft-fail when operator prerequisites are missing).
 #
-# Listens for `repository_dispatch` events of type `preview-create-from-api`
-# fired by the api repo's preview-dispatch workflow. In Phase 1a this
-# workflow ONLY validates the dispatched inputs and logs what it would do —
-# no kubectl calls are made. Phase 1b will wire the real provisioning.
+# Listens for `repository_dispatch:preview-create-from-api` events fired by
+# the api repo's preview-dispatch workflow. Provisions a real
+# `preview-api-pr-<N>` namespace with:
+#   - ResourceQuota + LimitRange (from 10-quota-template.yaml)
+#   - Slim pg-platform Deployment + Service (from 30-data-template.yaml)
+#   - api Deployment + Service + Ingress (from 40-api-template.yaml), image
+#     pulled from `ghcr.io/instanode-dev/instant-api:pr-<N>-<sha>` — built
+#     by the api repo's deploy.yml retag step (api PR
+#     `feat/preview-env-pr-image-retag`).
 #
-# Status reporting: posts a check-run on the source api PR via the GitHub
-# Checks API. The conclusion is `neutral` for the entire warn-only month —
-# this means the check shows up on the PR and surfaces preview-env state
-# without blocking merge (per operator decision and rule 25's gating
-# discipline). After 200 PRs at <2% flake rate the conclusion will flip
-# to `success`/`failure` and become a required check.
+# Status reporting: a `success` check-run posts to the api PR with the
+# preview URL on success. A `neutral` check-run posts on soft-fail
+# (operator prerequisites missing) — never `failure`, to honour the
+# month-1 warn-only decision (rule 25 + design doc §5).
 #
-# Required repo secret (infra):
-#   PREVIEW_CHECKS_TOKEN  fine-grained PAT with `checks: write` on the
-#                         api repo. Used to POST the check-run. Falls back
-#                         to GITHUB_TOKEN — but GITHUB_TOKEN is scoped to
-#                         the infra repo and CANNOT write checks on the
-#                         api repo (cross-repo limitation), so without the
-#                         PAT the check step soft-skips with a warning.
+# Soft-fail surface (each posts neutral + exit 0, never blocks merge):
+#   - PREVIEW_KUBECONFIG_B64 unset                  → can't reach cluster
+#   - Per-image GHCR pull Secret can't be copied    → image won't pull
+#   - cert-manager ClusterIssuer absent             → TLS falls through to
+#                                                     ingress-nginx default
+#   - Wildcard DNS not pointed at the LB            → URL won't resolve
+#                                                     (visible at /healthz
+#                                                     curl step in Phase 1c)
+#   - Rollout times out (240s)                      → namespace stays for
+#                                                     debug; TTL CronJob
+#                                                     reaps after 72h
 #
-# SECURITY: every value pulled from `github.event.client_payload.*` is an
-# untrusted input fired by the api repo's workflow. We:
-#   - assign them to `env:` (per security guidance — never interpolate
-#     untrusted into the shell block directly);
-#   - validate the PR number is numeric and the SHA is 7-40 hex chars
-#     before using either in any URL or JSON body;
-#   - reject inputs that don't match the expected shape with an `::error`
-#     and a non-zero exit.
+# SECURITY: every github.event.client_payload.* value is assigned to env: +
+# shape-validated before use. The kubeconfig is decoded from a base64 secret
+# into a tmpfile, used, and never echoed. JWT_SECRET + AES_KEY for the
+# preview env are generated fresh per provision (openssl rand) — never the
+# prod secrets.
 
 name: preview-create
 
@@ -53,9 +58,13 @@ concurrency:
   group: preview-create-${{ github.event.client_payload.api_pr || inputs.api_pr }}
   cancel-in-progress: true
 
+env:
+  IMAGE_REPO: ghcr.io/instanode-dev/instant-api
+  PREVIEW_DOMAIN_SUFFIX: preview.instanode.dev
+
 jobs:
-  plan:
-    name: Plan preview env (Phase 1a — dry-run)
+  provision:
+    name: Provision preview env (Phase 1b)
     runs-on: ubuntu-latest
     env:
       API_PR: ${{ github.event.client_payload.api_pr || inputs.api_pr }}
@@ -81,7 +90,6 @@ jobs:
               exit 1
               ;;
           esac
-          # Length cap defense: PR numbers > 5 digits aren't realistic, SHAs > 40 aren't valid.
           if [ "${#API_PR}" -gt 5 ]; then
             echo "::error::api_pr too long: ${#API_PR} chars"
             exit 1
@@ -92,60 +100,247 @@ jobs:
           fi
           echo "inputs OK: api_pr=${API_PR} api_sha=${API_SHA} trigger=${TRIGGER}"
 
-      - name: Compute preview namespace name
+      - name: Compute preview namespace + hostname
         id: ns
         run: |
           set -euo pipefail
           PREVIEW_NS="preview-api-pr-${API_PR}"
+          PREVIEW_HOSTNAME="pr-${API_PR}.${PREVIEW_DOMAIN_SUFFIX}"
+          PREVIEW_URL="https://${PREVIEW_HOSTNAME}"
           echo "preview_ns=${PREVIEW_NS}" >> "$GITHUB_OUTPUT"
-          echo "preview namespace will be: ${PREVIEW_NS}"
+          echo "preview_hostname=${PREVIEW_HOSTNAME}" >> "$GITHUB_OUTPUT"
+          echo "preview_url=${PREVIEW_URL}" >> "$GITHUB_OUTPUT"
+          echo "preview namespace: ${PREVIEW_NS}"
+          echo "preview hostname:  ${PREVIEW_HOSTNAME}"
+          echo "preview url:       ${PREVIEW_URL}"
 
-      - name: Checkout infra (for template reference)
+      - name: Checkout infra (for k8s/preview templates)
         uses: actions/checkout@v6
 
-      - name: DRY-RUN what we would apply
+      - name: Soft-check operator prerequisites (kubeconfig secret)
+        id: prereq
+        env:
+          KUBECONFIG_B64: ${{ secrets.PREVIEW_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KUBECONFIG_B64:-}" ]; then
+            echo "::warning::PREVIEW_KUBECONFIG_B64 secret is not set on the infra repo."
+            echo "::warning::Operator prerequisite for Phase 1b not yet complete — soft-fail."
+            echo "operator setup: PREVIEW-ENV-RUNBOOK.md step 5–6"
+            echo "soft_fail=true" >> "$GITHUB_OUTPUT"
+            echo "soft_fail_reason=PREVIEW_KUBECONFIG_B64 not set (operator task gated on RBAC apply + SA token mint)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "soft_fail=false" >> "$GITHUB_OUTPUT"
+          echo "soft_fail_reason=" >> "$GITHUB_OUTPUT"
+
+      - name: Set up kubectl
+        if: steps.prereq.outputs.soft_fail == 'false'
+        uses: azure/setup-kubectl@v5
+        with:
+          version: 'latest'
+
+      - name: Configure kubeconfig from PREVIEW_KUBECONFIG_B64
+        if: steps.prereq.outputs.soft_fail == 'false'
+        env:
+          KUBECONFIG_B64: ${{ secrets.PREVIEW_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.kube"
+          echo "${KUBECONFIG_B64}" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+          kubectl version --client=true
+          # Verify the SA can do the minimum we need before mutating anything.
+          # If this returns "no" the kubeconfig is wrong or the RBAC wasn't
+          # applied — soft-fail rather than partial-apply.
+          if ! kubectl auth can-i create namespaces >/dev/null 2>&1; then
+            echo "::warning::kubeconfig SA cannot create namespaces — soft-failing."
+            echo "operator: re-run PREVIEW-ENV-RUNBOOK.md steps 1–6 (RBAC + SA token + secret upload)."
+            exit 78
+          fi
+
+      - name: Install envsubst
+        if: steps.prereq.outputs.soft_fail == 'false'
+        run: |
+          if ! command -v envsubst >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq gettext-base
+          fi
+
+      - name: Create / refresh preview namespace
+        if: steps.prereq.outputs.soft_fail == 'false'
+        env:
+          PREVIEW_NS: ${{ steps.ns.outputs.preview_ns }}
+          PR_NUMBER: ${{ env.API_PR }}
+          SHA: ${{ env.API_SHA }}
+          TRIGGER: ${{ env.TRIGGER }}
+        run: |
+          set -euo pipefail
+          CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # Defensive name prefix check (Kyverno is the cluster-side guard;
+          # this is the workflow-side guard per 00-rbac.yaml's comment).
+          case "${PREVIEW_NS}" in
+            preview-api-pr-*) ;;
+            *)
+              echo "::error::computed namespace '${PREVIEW_NS}' does not match preview-api-pr-* prefix"
+              exit 1
+              ;;
+          esac
+          # TRIGGER comes from client_payload (attacker-controllable in theory).
+          # Whitelist before embedding in the manifest — any non-matching
+          # value collapses to "unknown" so it can't break yaml or inject
+          # extra k8s annotations.
+          case "${TRIGGER}" in
+            opened|synchronize|reopened|workflow_dispatch|repository_dispatch) ;;
+            *) TRIGGER="unknown" ;;
+          esac
+          # Apply manifest (create if absent, no-op label update if present).
+          # `kubectl create ns --dry-run | apply` is the idempotent dance.
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: ${PREVIEW_NS}
+            labels:
+              app.kubernetes.io/part-of: preview-envs
+              instanode.dev/preview-pr: "${PR_NUMBER}"
+            annotations:
+              instanode.dev/created-at: "${CREATED_AT}"
+              instanode.dev/api-sha: "${SHA}"
+              instanode.dev/trigger: "${TRIGGER}"
+          EOF
+          # Paranoia: confirm no Service in the rendered templates would
+          # cross into instant-data (rule 3 in PREVIEW-ENV-RUNBOOK.md).
+          if grep -RInE 'instant-data' k8s/preview/*.yaml; then
+            echo "::error::A k8s/preview/*.yaml template references instant-data — refusing to apply."
+            exit 1
+          fi
+
+      - name: Apply ResourceQuota + LimitRange
+        if: steps.prereq.outputs.soft_fail == 'false'
         env:
           PREVIEW_NS: ${{ steps.ns.outputs.preview_ns }}
           PR_NUMBER: ${{ env.API_PR }}
         run: |
           set -euo pipefail
-          echo "=========================================================="
-          echo "Phase 1a — DRY-RUN. No kubectl calls are made."
-          echo "=========================================================="
-          echo "Would create namespace: ${PREVIEW_NS}"
-          echo "Would label: instanode.dev/preview-pr=${PR_NUMBER}"
-          echo "Would annotate: instanode.dev/created-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          echo "Would annotate: instanode.dev/api-sha=${API_SHA}"
-          echo "Would annotate: instanode.dev/trigger=${TRIGGER}"
-          echo ""
-          echo "Would render ResourceQuota + LimitRange from template:"
-          if ! command -v envsubst >/dev/null 2>&1; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq gettext-base
-          fi
           export PREVIEW_NS PR_NUMBER
-          envsubst < k8s/preview/10-quota-template.yaml
-          echo ""
-          echo "Would (Phase 1b) build image ghcr.io/instanode-dev/instant-api:pr-${PR_NUMBER}-${API_SHA}"
-          echo "Would (Phase 1b) apply data-tier slim variants (pg-platform, pg-customers, redis x2)"
-          echo "Would (Phase 1b) apply api Deployment with initContainer = migrations"
-          echo "Would (Phase 1b) apply Ingress for api.preview-pr-${PR_NUMBER}.preview.instanode.dev"
-          echo "Would (Phase 1b) wait for /healthz on the preview URL to return commit_id=${API_SHA}"
-          echo "=========================================================="
+          envsubst < k8s/preview/10-quota-template.yaml | kubectl apply -f -
+
+      - name: Mint per-preview secrets (PG password / JWT / AES key)
+        id: secrets
+        if: steps.prereq.outputs.soft_fail == 'false'
+        run: |
+          set -euo pipefail
+          # Each is per-preview-env, never reused, never the prod value.
+          # Stored in GH Actions output as a masked value so it survives
+          # across steps without re-rolling (envsubst needs the same value
+          # in both 30-data-template + 40-api-template).
+          PG_PASSWORD=$(openssl rand -hex 16)
+          JWT_SECRET=$(openssl rand -hex 32)
+          AES_KEY=$(openssl rand -hex 32)
+          echo "::add-mask::${PG_PASSWORD}"
+          echo "::add-mask::${JWT_SECRET}"
+          echo "::add-mask::${AES_KEY}"
+          echo "pg_password=${PG_PASSWORD}" >> "$GITHUB_OUTPUT"
+          echo "jwt_secret=${JWT_SECRET}" >> "$GITHUB_OUTPUT"
+          echo "aes_key=${AES_KEY}" >> "$GITHUB_OUTPUT"
+
+      - name: Copy GHCR pull Secret into preview namespace (soft-fail)
+        if: steps.prereq.outputs.soft_fail == 'false'
+        env:
+          PREVIEW_NS: ${{ steps.ns.outputs.preview_ns }}
+        run: |
+          set -euo pipefail
+          # The prod `instant` namespace has `ghcr-pull` (and `ghcr-org-pull`)
+          # docker-registry Secrets. Preview pods need the same to pull
+          # `ghcr.io/instanode-dev/instant-api:pr-*` images (the image is
+          # in a private org package).
+          # If the source Secret is missing OR the SA lacks read on `instant`,
+          # the pod will hit ImagePullBackOff — soft-warn now, rollout-status
+          # surfaces it as a timeout downstream.
+          if kubectl -n instant get secret ghcr-pull -o yaml >/dev/null 2>&1; then
+            kubectl -n instant get secret ghcr-pull -o yaml \
+              | sed "s/namespace: instant/namespace: ${PREVIEW_NS}/" \
+              | kubectl apply -f -
+            echo "copied ghcr-pull → ${PREVIEW_NS}"
+          else
+            echo "::warning::ghcr-pull Secret not found in instant ns (or SA can't read it)."
+            echo "::warning::Pod will likely hit ImagePullBackOff. Operator task: grant"
+            echo "::warning::preview-provisioner SA `get secrets` in `instant` ns, OR"
+            echo "::warning::create a dedicated ghcr-pull Secret in preview-system and copy from there."
+          fi
+
+      - name: Apply pg-platform sidecar (data tier)
+        if: steps.prereq.outputs.soft_fail == 'false'
+        env:
+          PREVIEW_NS: ${{ steps.ns.outputs.preview_ns }}
+          PR_NUMBER: ${{ env.API_PR }}
+          PG_PASSWORD: ${{ steps.secrets.outputs.pg_password }}
+        run: |
+          set -euo pipefail
+          export PREVIEW_NS PR_NUMBER PG_PASSWORD
+          envsubst < k8s/preview/30-data-template.yaml | kubectl apply -f -
+
+      - name: Apply api Deployment + Service + Ingress
+        if: steps.prereq.outputs.soft_fail == 'false'
+        env:
+          PREVIEW_NS: ${{ steps.ns.outputs.preview_ns }}
+          PR_NUMBER: ${{ env.API_PR }}
+          API_SHA: ${{ env.API_SHA }}
+          IMAGE_REPO: ${{ env.IMAGE_REPO }}
+          PG_PASSWORD: ${{ steps.secrets.outputs.pg_password }}
+          JWT_SECRET: ${{ steps.secrets.outputs.jwt_secret }}
+          AES_KEY: ${{ steps.secrets.outputs.aes_key }}
+          PREVIEW_HOSTNAME: ${{ steps.ns.outputs.preview_hostname }}
+        run: |
+          set -euo pipefail
+          export PREVIEW_NS PR_NUMBER API_SHA IMAGE_REPO PG_PASSWORD JWT_SECRET AES_KEY PREVIEW_HOSTNAME
+          envsubst < k8s/preview/40-api-template.yaml | kubectl apply -f -
+
+      - name: Wait for api Deployment to be Available (240s)
+        id: rollout
+        if: steps.prereq.outputs.soft_fail == 'false'
+        env:
+          PREVIEW_NS: ${{ steps.ns.outputs.preview_ns }}
+        run: |
+          set -euo pipefail
+          # 240s budget per Phase 1b spec. The init container waits up to 120s
+          # for pg-platform; the api boot + readinessProbe usually completes
+          # in ~30s once pg is up. 240s leaves headroom for cold-node image
+          # pulls. Failure here is soft-fail (warn-only); the namespace
+          # stays around for debug and the TTL CronJob reaps after 72h.
+          set +e
+          kubectl rollout status deployment/instant-api -n "${PREVIEW_NS}" --timeout=240s
+          rc=$?
+          set -e
+          if [ "${rc}" -ne 0 ]; then
+            echo "::warning::api Deployment did not become Available within 240s — soft-fail."
+            echo "kubectl get pods -n ${PREVIEW_NS}:"
+            kubectl get pods -n "${PREVIEW_NS}" || true
+            echo "kubectl describe deploy/instant-api -n ${PREVIEW_NS}:"
+            kubectl describe deploy/instant-api -n "${PREVIEW_NS}" || true
+            echo "rollout_ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "api Deployment is Available."
+            echo "rollout_ok=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Post planned-status check on api PR
+        if: always()
         env:
           CHECKS_TOKEN: ${{ secrets.PREVIEW_CHECKS_TOKEN }}
           API_SHA_FOR_CHECK: ${{ env.API_SHA }}
           PR_FOR_CHECK: ${{ env.API_PR }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PREVIEW_URL: ${{ steps.ns.outputs.preview_url }}
+          SOFT_FAIL: ${{ steps.prereq.outputs.soft_fail }}
+          SOFT_FAIL_REASON: ${{ steps.prereq.outputs.soft_fail_reason }}
+          ROLLOUT_OK: ${{ steps.rollout.outputs.rollout_ok }}
         run: |
           set -euo pipefail
           if [ -z "${CHECKS_TOKEN:-}" ]; then
-            echo "::warning::PREVIEW_CHECKS_TOKEN not set — skipping cross-repo check-run post. " \
-              "Provision a fine-grained PAT with checks:write on InstaNode-dev/api to enable PR-side visibility."
+            echo "::warning::PREVIEW_CHECKS_TOKEN not set — skipping cross-repo check-run post."
             exit 0
           fi
-          # Strict shape gate already enforced upstream, but defense-in-depth.
           case "${API_SHA_FOR_CHECK}" in
             [0-9a-f]*) ;;
             *) echo "::error::api_sha failed defensive recheck"; exit 1 ;;
@@ -154,11 +349,32 @@ jobs:
             [1-9]*) ;;
             *) echo "::error::api_pr failed defensive recheck"; exit 1 ;;
           esac
-          # Phase 1a always reports `neutral` — warn-only. Phase 1c flips
-          # this to success/failure based on real Playwright outcome.
-          payload=$(printf '{"name":"preview-env / status:planned","head_sha":"%s","status":"completed","conclusion":"neutral","output":{"title":"Preview env Phase 1a (scaffolding)","summary":"Phase 1a scaffolding is live. No real preview namespace was created — the workflow ran in dry-run mode. Phase 1b will wire actual provisioning.\\n\\nPR: %s\\nSHA: %s\\nDispatched run: %s"}}' \
-            "${API_SHA_FOR_CHECK}" "${PR_FOR_CHECK}" "${API_SHA_FOR_CHECK}" "${RUN_URL}")
-          echo "Posting check-run to InstaNode-dev/api for SHA=${API_SHA_FOR_CHECK}"
+          # Conclusion + title selection: Phase 1b stays warn-only for the
+          # month-1 window. Real provisioning posts `success` so the URL is
+          # surfaced on the PR; soft-fail posts `neutral` with the reason so
+          # the operator can see what's still missing. Never `failure` —
+          # the month-1 gating decision is explicit.
+          if [ "${SOFT_FAIL}" = "true" ]; then
+            conclusion="neutral"
+            title="Preview env Phase 1b (operator prerequisite missing)"
+            summary="Soft-fail: ${SOFT_FAIL_REASON}\n\nPhase 1b is wired but cannot provision until the operator completes the prerequisite. See PREVIEW-ENV-RUNBOOK.md.\n\nPR: ${PR_FOR_CHECK}\nSHA: ${API_SHA_FOR_CHECK}\nDispatched run: ${RUN_URL}"
+          elif [ "${ROLLOUT_OK:-false}" = "true" ]; then
+            conclusion="success"
+            title="Preview env LIVE: ${PREVIEW_URL}"
+            summary="Preview env ${PREVIEW_URL} is up.\n\nServices: instant-api + pg-platform.\nTeardown: on PR close (preview-teardown workflow) or 72h TTL.\n\nPR: ${PR_FOR_CHECK}\nSHA: ${API_SHA_FOR_CHECK}\nDispatched run: ${RUN_URL}"
+          else
+            conclusion="neutral"
+            title="Preview env Phase 1b (rollout did not complete)"
+            summary="Soft-fail: api Deployment did not become Available within 240s.\nLikely causes: image not yet pushed (api retag step in deploy.yml) OR pg-platform stuck OR GHCR pull Secret missing.\n\nNamespace ${PREVIEW_URL} kept for debug; TTL CronJob reaps after 72h.\n\nPR: ${PR_FOR_CHECK}\nSHA: ${API_SHA_FOR_CHECK}\nDispatched run: ${RUN_URL}"
+          fi
+          payload=$(jq -n \
+            --arg name "preview-env / status:planned" \
+            --arg head_sha "${API_SHA_FOR_CHECK}" \
+            --arg conclusion "${conclusion}" \
+            --arg title "${title}" \
+            --arg summary "${summary}" \
+            '{name: $name, head_sha: $head_sha, status: "completed", conclusion: $conclusion, output: {title: $title, summary: $summary}}')
+          echo "Posting check-run (${conclusion}) to InstaNode-dev/api for SHA=${API_SHA_FOR_CHECK}"
           http_code=$(curl -sS -o /tmp/checks.out -w '%{http_code}' \
             -X POST \
             -H "Accept: application/vnd.github+json" \
@@ -168,8 +384,6 @@ jobs:
             -d "$payload")
           echo "check-runs response: HTTP $http_code"
           cat /tmp/checks.out || true
-          # 201 Created on success. Anything else: soft-warn in Phase 1a.
           if [ "$http_code" != "201" ]; then
-            echo "::warning::check-runs POST returned $http_code (expected 201). " \
-              "Not failing the dispatch run — Phase 1a is warn-only end-to-end."
+            echo "::warning::check-runs POST returned $http_code (expected 201). Phase 1b is warn-only."
           fi

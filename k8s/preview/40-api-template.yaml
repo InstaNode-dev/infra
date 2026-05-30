@@ -1,0 +1,261 @@
+---
+# infra/k8s/preview/40-api-template.yaml — Phase 1b.
+#
+# api Deployment + Service + Ingress for a preview namespace. Image is
+# pulled from GHCR at tag `:pr-${PR_NUMBER}-${API_SHA}` — built by the api
+# repo's deploy.yml retag step (see api PR
+# `feat/preview-env-pr-image-retag`).
+#
+# Phase 1b deliberately ships only api + pg-platform. The api will boot,
+# pass /healthz (Postgres ping → in-namespace pg-platform Service), and
+# serve every read-only handler. Endpoints that need worker / provisioner /
+# Mongo / Redis / NATS will 503 — those land in Phase 1c.
+#
+# Probe choice: Phase 1b uses readinessProbe on /healthz only (no
+# startupProbe / livenessProbe split yet). The api's /livez handler exists
+# but the Phase 1b MVP focuses on "Deployment becomes Available" — full
+# probe parity with prod (startup/readiness/liveness split) lands with
+# Phase 1c when we add worker + provisioner and need migration-aware
+# startup timing.
+#
+# Ingress hostname pattern: `pr-${PR_NUMBER}.preview.instanode.dev`. The
+# wildcard cert lives in the operator-managed ClusterIssuer
+# `letsencrypt-preview-dns01`; if cert-manager doesn't have an Issuer
+# annotation here, the host will serve over the default ingress-nginx
+# self-signed cert (fine for warn-only Phase 1b — Playwright in Phase 1c
+# will configure `ignoreHTTPSErrors`).
+#
+# This is a TEMPLATE — `envsubst` substitutes ${PREVIEW_NS}, ${PR_NUMBER},
+# ${API_SHA}, ${IMAGE_REPO}, ${PG_PASSWORD}, ${JWT_SECRET}, ${AES_KEY},
+# ${PREVIEW_HOSTNAME} at provision time.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-preview-secrets
+  namespace: ${PREVIEW_NS}
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+    instanode.dev/preview-pr: "${PR_NUMBER}"
+type: Opaque
+stringData:
+  # DATABASE_URL points at the in-namespace pg-platform Service. NEVER cross
+  # the namespace boundary into instant-data; see rule 3 in
+  # PREVIEW-ENV-RUNBOOK.md ("Preview namespaces NEVER reference
+  # instant-data Services").
+  DATABASE_URL: "postgres://instant:${PG_PASSWORD}@postgres-platform.${PREVIEW_NS}.svc.cluster.local:5432/instant_platform?sslmode=disable"
+  # CUSTOMER_DATABASE_URL set to the same in-ns pg-platform host as a
+  # placeholder. /db/new in preview MUST 503 (no real customer DB target
+  # in Phase 1b); the variable is set to keep main.go's startup validation
+  # happy. Phase 1c wires a real pg-customers sidecar.
+  CUSTOMER_DATABASE_URL: "postgres://instant:${PG_PASSWORD}@postgres-platform.${PREVIEW_NS}.svc.cluster.local:5432/instant_platform?sslmode=disable"
+  JWT_SECRET: "${JWT_SECRET}"
+  # 64-char hex = 32 bytes. Generated fresh per preview env at provision
+  # time — never the prod key.
+  AES_KEY: "${AES_KEY}"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-preview-config
+  namespace: ${PREVIEW_NS}
+  labels:
+    app.kubernetes.io/part-of: preview-envs
+    instanode.dev/preview-pr: "${PR_NUMBER}"
+data:
+  ENVIRONMENT: "preview"
+  PLANS_PATH: "/app/plans.yaml"
+  PORT: "8080"
+  # Rule 4 in PREVIEW-ENV-RUNBOOK.md "Hard rules": no real external creds
+  # in preview. Object storage falls back to a log-only stub when the
+  # backend is "minio" without a reachable MinIO, and Brevo treats an empty
+  # key as fail-open log.
+  OBJECT_STORE_BACKEND: "minio"
+  BREVO_API_KEY: ""
+  # Worker / provisioner are absent in Phase 1b. The api's clients will fail
+  # open on these ports — readiness reports them as degraded, but /healthz
+  # only checks the platform DB and stays 200.
+  PROVISIONER_HOST: "localhost"
+  PROVISIONER_PORT: "50051"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instant-api
+  namespace: ${PREVIEW_NS}
+  labels:
+    app: instant-api
+    app.kubernetes.io/part-of: preview-envs
+    instanode.dev/preview-pr: "${PR_NUMBER}"
+    instanode.dev/preview-api-sha: "${API_SHA}"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: instant-api
+  template:
+    metadata:
+      labels:
+        app: instant-api
+        app.kubernetes.io/part-of: preview-envs
+        instanode.dev/preview-pr: "${PR_NUMBER}"
+    spec:
+      # imagePullSecrets — the preview namespace is fresh, so it has no
+      # ghcr-pull / ghcr-org-pull Secrets from prod. The provisioning
+      # workflow copies the GHCR pull Secret into the namespace before
+      # this Deployment is applied; if the copy is skipped (operator
+      # task not yet complete), the pod stalls in ImagePullBackOff and
+      # the workflow's `rollout status` times out, surfacing as a
+      # warn-only check (rule 5 in the design doc — fail-open).
+      imagePullSecrets:
+        - name: ghcr-pull
+      # wait-for-platform-db: the api crashes if pg-platform isn't ready
+      # when it boots (DB connection retries are exhausted in ~10s). The
+      # initContainer below polls pg_isready against the in-ns Service
+      # before the api container starts. Mirrors the local-dev-overlay
+      # pattern but inline (no overlay needed).
+      initContainers:
+        - name: wait-for-platform-db
+          image: postgres:17-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-platform-credentials
+                  key: POSTGRES_PASSWORD
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              echo "waiting for postgres-platform.${PREVIEW_NS}.svc.cluster.local:5432"
+              for i in $(seq 1 60); do
+                if pg_isready -h postgres-platform.${PREVIEW_NS}.svc.cluster.local -p 5432 -U instant -d instant_platform >/dev/null 2>&1; then
+                  echo "pg-platform ready after ${i} attempts"
+                  exit 0
+                fi
+                sleep 2
+              done
+              echo "ERROR: pg-platform never became ready"
+              exit 1
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      containers:
+        - name: api
+          image: ${IMAGE_REPO}:pr-${PR_NUMBER}-${API_SHA}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: api-preview-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: api-preview-secrets
+                  key: DATABASE_URL
+            - name: CUSTOMER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: api-preview-secrets
+                  key: CUSTOMER_DATABASE_URL
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-preview-secrets
+                  key: JWT_SECRET
+            - name: AES_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-preview-secrets
+                  key: AES_KEY
+            # VERSION echoed by /healthz so the workflow's rule-14 SHA-gate
+            # can verify the right image is live (Phase 1c).
+            - name: VERSION
+              value: "pr-${PR_NUMBER}-${API_SHA}"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+              ephemeral-storage: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+              ephemeral-storage: "1Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: instant-api
+  namespace: ${PREVIEW_NS}
+  labels:
+    app: instant-api
+    app.kubernetes.io/part-of: preview-envs
+    instanode.dev/preview-pr: "${PR_NUMBER}"
+spec:
+  type: ClusterIP
+  selector:
+    app: instant-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: instant-api
+  namespace: ${PREVIEW_NS}
+  labels:
+    app: instant-api
+    app.kubernetes.io/part-of: preview-envs
+    instanode.dev/preview-pr: "${PR_NUMBER}"
+  annotations:
+    # cert-manager wildcard issuer — operator must create this in Phase 1b
+    # setup. If absent, ingress-nginx serves the default self-signed cert
+    # for the host (workflow logs a warning but continues — fail-open).
+    cert-manager.io/cluster-issuer: "letsencrypt-preview-dns01"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ${PREVIEW_HOSTNAME}
+      # Single shared wildcard Secret in the namespace, populated by the
+      # reflector controller from the cluster-wide
+      # `preview-instanode-dev-wildcard` Secret. If the reflector is not
+      # installed (operator task), the Secret will be missing and TLS
+      # will fall through to the ingress-nginx default cert.
+      secretName: preview-instanode-dev-wildcard-tls
+  rules:
+    - host: ${PREVIEW_HOSTNAME}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: instant-api
+                port:
+                  number: 8080

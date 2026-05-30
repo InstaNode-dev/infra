@@ -179,12 +179,58 @@ preview-ttl-sweeper start (dry_run=true, max_age_hours=72)
 preview-ttl-sweeper done: found=0 swept=0 ...
 ```
 
+## Phase 1b — what's wired (this PR)
+
+Real provisioning lands in the same workflows. Files added/updated:
+
+| Path | Change |
+|---|---|
+| `.github/workflows/preview-create.yml` | Decodes `PREVIEW_KUBECONFIG_B64`, creates `preview-api-pr-<N>` namespace, applies ResourceQuota + LimitRange + pg-platform sidecar + api Deployment/Service/Ingress, waits for rollout (240s), posts `success` (or `neutral` on soft-fail) check on the api PR. **Soft-fails (warn-only check, exit 0) when `PREVIEW_KUBECONFIG_B64` is unset** so this PR can merge dormant. |
+| `.github/workflows/preview-teardown.yml` | Decodes kubeconfig, `kubectl delete namespace preview-api-pr-<N>` (cascade), posts teardown check on the api PR. Same soft-fail on missing kubeconfig. |
+| `k8s/preview/20-cron-ttl.yaml` | `DRY_RUN=true` → `DRY_RUN=false`. Real deletes after 72h. |
+| `k8s/preview/30-data-template.yaml` | NEW — slim single-replica pg-platform Deployment + Service + Secret. `emptyDir`-backed, no PVC. ${PREVIEW_NS}/${PR_NUMBER}/${PG_PASSWORD} substituted at apply time. |
+| `k8s/preview/40-api-template.yaml` | NEW — api Deployment (image `:pr-<N>-<sha>` from GHCR, initContainer = pg-platform wait), Service, Ingress for `pr-<N>.preview.instanode.dev`. Per-preview JWT + AES + pg password generated at provision time, never reused, never the prod values. |
+
+Scope is deliberately small for Phase 1b — only api + pg-platform. No worker, no provisioner, no Mongo, no Redis, no NATS. Endpoints that need those will 503 in preview; Phase 1c adds them.
+
+Companion api PR: `feat/preview-env-pr-image-retag` adds the `:pr-<N>-<sha>` tag push to api/.github/workflows/deploy.yml so the preview workflow has an image to deploy.
+
+## Phase 1b — operator activation (once your prerequisites land)
+
+Once the two Phase 1a operator tasks below (DNS + cert-manager) are done AND `PREVIEW_KUBECONFIG_B64` + `PREVIEW_CHECKS_TOKEN` are set on the infra repo, the workflow auto-fires on every api PR — no further toggle needed. Verify with:
+
+```bash
+# 1. Confirm the secret is on the infra repo
+gh secret list --repo InstaNode-dev/infra | grep -E 'PREVIEW_KUBECONFIG_B64|PREVIEW_CHECKS_TOKEN'
+# Expected: both listed
+
+# 2. Manually fire preview-create against a known PR + SHA
+gh workflow run preview-create.yml \
+  --repo InstaNode-dev/infra \
+  -f api_pr=210 \
+  -f api_sha=7cefafb
+
+# 3. Wait for the workflow, then check the namespace + the api PR's
+#    Checks tab. On success you should see:
+kubectl get ns preview-api-pr-210
+kubectl get deploy,svc,ing -n preview-api-pr-210
+curl -k https://pr-210.preview.instanode.dev/healthz
+
+# 4. Tear it down
+gh workflow run preview-teardown.yml \
+  --repo InstaNode-dev/infra \
+  -f api_pr=210
+kubectl get ns preview-api-pr-210
+# Expected: not found (or Terminating)
+```
+
+Optional belt-and-suspenders: copy the GHCR pull Secret to `preview-system` and adjust `preview-create.yml`'s copy step source ns if you'd rather not grant the preview SA `get secrets` in `instant`.
+
 ## Next phases
 
 | Phase | Scope | Effort |
 |---|---|---|
-| **1b** | Wire real `kubectl create namespace` / `apply -f` / `delete ns` in `preview-create.yml` + `preview-teardown.yml`. Apply data-tier slim variants. api Deployment with initContainer = migrations. Ingress + reflected wildcard TLS Secret. Flip TTL CronJob `DRY_RUN=false`. | 4 days |
-| **1c** | Wait for `/healthz` on the preview URL to match `commit_id == PR head SHA`. Run Playwright suite vs preview URL. Post `success`/`failure` check-runs (still `neutral` for first month, then promote per warn-only month-1 decision). | 3 days |
+| **1c** | Wait for `/healthz` on the preview URL to report `commit_id == PR head SHA` (rule 14 gate). Run Playwright suite vs preview URL. Add pg-customers + redis + worker + provisioner to the preview env so `/db/new` / `/cache/new` / async jobs work. Post `success`/`failure` check-runs (still `neutral` for first month, then promote per warn-only month-1 decision). | 3 days |
 | **2** | Multi-repo: worker + provisioner PRs trigger preview env with their own image tag. Cross-origin auth tests with `app.<slug>` + `api.<slug>`. | 3 days |
 
 ## Promotion criterion (warn-only → blocking)
