@@ -1,5 +1,5 @@
 ---
-# infra/k8s/preview/20-cron-ttl.yaml — Phase 1a (scaffolding only).
+# infra/k8s/preview/20-cron-ttl.yaml — Phase 1b (real deletes).
 #
 # Belt-and-suspenders TTL sweeper for preview namespaces.
 #
@@ -15,10 +15,12 @@
 #   - Lists all namespaces matching `instanode.dev/preview-pr` label.
 #   - Reads `instanode.dev/created-at` annotation (RFC3339 timestamp).
 #   - If older than 72h, deletes the namespace.
-#   - Phase 1a is DRY-RUN ONLY — the script prints `WOULD DELETE` lines
-#     but never actually calls `kubectl delete`. Phase 1b flips the
-#     `DRY_RUN` env var to `false` after the operator confirms the
-#     dry-run output looks correct over a few cycles.
+#   - Phase 1b: `DRY_RUN=false` (real deletes). The script still skips any
+#     namespace whose name does not match `preview-api-pr-*` (defensive
+#     parallel to the Kyverno guard on create), and skips namespaces
+#     carrying the `instanode.dev/preview-keep-alive=true` label.
+#   - To temporarily disable real deletes during operator validation,
+#     `kubectl -n preview-system set env cronjob/preview-ttl-sweeper DRY_RUN=true`.
 #
 # 72h justification: aligns with the design doc's hard ceiling. A long-running
 # infra-rewrite PR that legitimately needs more than 72h can either re-push
@@ -64,7 +66,7 @@ spec:
                   memory: "128Mi"
               env:
                 - name: DRY_RUN
-                  value: "true"
+                  value: "false"
                 - name: MAX_AGE_HOURS
                   value: "72"
                 - name: LABEL_SELECTOR
