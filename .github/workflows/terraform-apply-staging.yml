@@ -1,0 +1,103 @@
+---
+# infra — gated Terraform apply for the STAGING Cloudflare workspace.
+#
+# APPROVAL MODEL: workflow_dispatch ONLY. Never on push, never on merge,
+# never auto-promoted from a previous apply. Operator deliberately
+# triggers this from the Actions tab.
+#
+# Why split per env: staging and production must not share an apply
+# trigger. Splitting prevents a "promote-on-success" pipeline from
+# ever existing for production — every prod apply is a separate human
+# decision (see terraform-apply-production.yml).
+#
+# Security note: every GHA expression consumed in a run: block is
+# wrapped through env: to prevent script injection.
+
+name: terraform-apply-staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type APPLY-STAGING to confirm'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-apply-staging
+  cancel-in-progress: false   # never cancel an in-flight apply
+
+env:
+  TF_VERSION: '1.9.8'
+  TF_IN_AUTOMATION: 'true'
+  TF_ENV: 'staging'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  AWS_ACCESS_KEY_ID:     ${{ secrets.TF_STATE_R2_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_R2_SECRET_ACCESS_KEY }}
+  AWS_REGION: 'auto'
+  CF_ACCOUNT_ID:    ${{ secrets.CF_ACCOUNT_ID }}
+
+jobs:
+  guard:
+    name: confirm-input guard
+    runs-on: ubuntu-latest
+    env:
+      CONFIRM_INPUT: ${{ inputs.confirm }}
+    steps:
+      - name: Reject if confirm phrase wrong
+        run: |
+          if [ "${CONFIRM_INPUT}" != "APPLY-STAGING" ]; then
+            echo "::error::confirm input must be exactly 'APPLY-STAGING'"
+            exit 1
+          fi
+
+  apply:
+    name: apply staging
+    needs: guard
+    runs-on: ubuntu-latest
+    environment: staging
+    defaults:
+      run:
+        working-directory: terraform/cloudflare
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="endpoints={s3=\"https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com\"}" \
+            -backend-config="workspace_key_prefix=${TF_ENV}"
+
+      - name: terraform workspace select
+        run: terraform workspace select "${TF_ENV}"
+
+      - name: terraform plan
+        run: |
+          terraform plan \
+            -var-file="${TF_ENV}.auto.tfvars" \
+            -no-color \
+            -out=tfplan.bin
+
+      - name: terraform apply
+        run: terraform apply -no-color tfplan.bin
+
+      - name: Surface non-sensitive outputs (ids only, NO token values)
+        run: |
+          terraform output -no-color account_id           || true
+          terraform output -no-color zone_id              || true
+          terraform output -no-color deploy_token_id      || true
+          terraform output -no-color admin_tunnel_token_id || true
+
+      - name: Reminder
+        run: |
+          echo "::notice::STAGING APPLY COMPLETE."
+          echo "::notice::If tokens were created or rotated, run on an operator workstation:"
+          echo "::notice::    make install-secrets ENV=staging"
+          echo "::notice::Promoting to production is a SEPARATE manual decision via terraform-apply-production.yml."

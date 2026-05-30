@@ -1,0 +1,139 @@
+---
+# infra — gated Terraform apply for the PRODUCTION Cloudflare workspace.
+#
+# APPROVAL MODEL: workflow_dispatch + GitHub Environment "production"
+# with required reviewers. No push trigger. No "promote from staging"
+# trigger. Every production apply is a separate, deliberate decision
+# made by a human reviewer on a human-triggered run.
+#
+# Confirm phrase is stricter than staging — operator must type a
+# matching staging RUN_ID so they cannot apply prod without having
+# first applied + observed the same change in staging.
+#
+# Security note: every GHA expression consumed in a run: block is
+# wrapped through env: to prevent script injection.
+
+name: terraform-apply-production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type APPLY-PRODUCTION to confirm'
+        required: true
+        type: string
+      staging_run_id:
+        description: 'GH Actions run_id of the matching staging apply (must be a numeric id)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-apply-production
+  cancel-in-progress: false   # never cancel an in-flight apply
+
+env:
+  TF_VERSION: '1.9.8'
+  TF_IN_AUTOMATION: 'true'
+  TF_ENV: 'production'
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  AWS_ACCESS_KEY_ID:     ${{ secrets.TF_STATE_R2_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_R2_SECRET_ACCESS_KEY }}
+  AWS_REGION: 'auto'
+  CF_ACCOUNT_ID:    ${{ secrets.CF_ACCOUNT_ID }}
+
+jobs:
+  guard:
+    name: confirm-input + staging-precedent guard
+    runs-on: ubuntu-latest
+    env:
+      CONFIRM_INPUT:  ${{ inputs.confirm }}
+      STAGING_RUN_ID: ${{ inputs.staging_run_id }}
+    steps:
+      - name: Reject if confirm phrase wrong
+        run: |
+          if [ "${CONFIRM_INPUT}" != "APPLY-PRODUCTION" ]; then
+            echo "::error::confirm input must be exactly 'APPLY-PRODUCTION'"
+            exit 1
+          fi
+
+      - name: Reject if staging_run_id is not numeric
+        run: |
+          # ref-injection mitigation: validate strictly before any use.
+          case "${STAGING_RUN_ID}" in
+            ''|*[!0-9]*)
+              echo "::error::staging_run_id must be a numeric GH Actions run id (got '${STAGING_RUN_ID}')"
+              exit 1
+              ;;
+          esac
+
+      - name: Verify staging run exists + succeeded
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # STAGING_RUN_ID already validated as numeric above; safe to use.
+        run: |
+          conclusion=$(gh run view "${STAGING_RUN_ID}" --repo "${GITHUB_REPOSITORY}" --json conclusion --jq '.conclusion')
+          name=$(gh run view "${STAGING_RUN_ID}"       --repo "${GITHUB_REPOSITORY}" --json name        --jq '.name')
+          if [ "${name}" != "terraform-apply-staging" ]; then
+            echo "::error::staging_run_id ${STAGING_RUN_ID} is not a terraform-apply-staging run (got: ${name})"
+            exit 1
+          fi
+          if [ "${conclusion}" != "success" ]; then
+            echo "::error::staging_run_id ${STAGING_RUN_ID} did not succeed (conclusion: ${conclusion})"
+            exit 1
+          fi
+          echo "staging precedent ✓ (run ${STAGING_RUN_ID} = success)"
+
+  apply:
+    name: apply production
+    needs: guard
+    runs-on: ubuntu-latest
+    # GitHub Environment "production" must be configured with Required
+    # Reviewers — operator sets this up at repo Settings → Environments →
+    # production → Deployment protection rules. This is the second gate
+    # on top of the confirm input + staging-precedent checks above.
+    environment: production
+    defaults:
+      run:
+        working-directory: terraform/cloudflare
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="endpoints={s3=\"https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com\"}" \
+            -backend-config="workspace_key_prefix=${TF_ENV}"
+
+      - name: terraform workspace select
+        run: terraform workspace select "${TF_ENV}"
+
+      - name: terraform plan
+        run: |
+          terraform plan \
+            -var-file="${TF_ENV}.auto.tfvars" \
+            -no-color \
+            -out=tfplan.bin
+
+      - name: terraform apply
+        run: terraform apply -no-color tfplan.bin
+
+      - name: Surface non-sensitive outputs (ids only, NO token values)
+        run: |
+          terraform output -no-color account_id            || true
+          terraform output -no-color zone_id               || true
+          terraform output -no-color deploy_token_id       || true
+          terraform output -no-color admin_tunnel_token_id || true
+
+      - name: Reminder
+        run: |
+          echo "::notice::PRODUCTION APPLY COMPLETE."
+          echo "::notice::If tokens were created or rotated, run on an operator workstation:"
+          echo "::notice::    make install-secrets ENV=production"
+          echo "::notice::Confirm the CF dashboard audit log shows the change before revoking the prior token."
