@@ -642,3 +642,39 @@ spec:
               Cross-correlate against audit_log kind=auth_probe_failed +
               the worker structured slog ERROR `auth_probe_failed leg=...
               reason=...`. Source: worker/internal/jobs/auth_probe.go.
+
+    # Hourly synthetic deploy prober. Every 60 minutes the worker drives
+    # a real end-to-end deploy against prod (POST /deploy/new with
+    # redeploy=true → Kaniko build + k8s rollout → status poll until
+    # healthy → public-host GET expecting 200). Any fail outcome over a
+    # 30-minute window pages — at the 60-minute cadence a single fail
+    # IS already a regression, so the 30-minute window guarantees a
+    # P0 inside one tick rather than waiting two cycles (90 minutes of
+    # broken deploys before paging would be too long given the platform
+    # promises agent-driven deploys as a paid wedge). Mirrors
+    # deploy-probe-fail.json in newrelic/alerts/.
+    - name: instant-worker-deploy-probe
+      rules:
+        - alert: DeployProbeFail
+          expr: |
+            sum(increase(instant_deploy_probe_outcome_total{result="fail"}[30m])) > 0
+          for: 30m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "Hourly deploy prober fail (deploy pipeline broken in prod)"
+            description: |
+              instant_deploy_probe_outcome_total{result="fail"} > 0 in 30m.
+              The hourly deploy prober drives a real end-to-end deploy
+              against prod every 60 minutes. A fail outcome means one of:
+              /deploy/new returned non-2xx (api crashed, GHCR auth broken,
+              tier-limit miscount), the status row stayed `building` past
+              the 90s budget OR flipped to `failed` (Kaniko crash,
+              image-pull-backoff — the exact stuck-build class that hid
+              the 2026-05-30 morning truehomie-api incident for ~30 min),
+              or the public *.deployment.instanode.dev URL returned non-200
+              after `healthy` (Ingress / TLS / pod-readiness regression).
+              Cross-correlate against audit_log kind=deploy_probe_failed +
+              the worker structured slog ERROR `deploy_probe_failed leg=...
+              reason=...`. Source: worker/internal/jobs/deploy_probe.go.

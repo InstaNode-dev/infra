@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — deploy_probe_failed [synthetic deploy pipeline broken in prod]",
+  "type": "NRQL",
+  "description": "P0 page on ANY occurrence of instant_deploy_probe_outcome_total{result=\"fail\"}. The hourly deploy prober drives a real end-to-end deploy against the prod /deploy/new pipeline every 60 minutes (POST /deploy/new with redeploy=true → Kaniko build + k8s rollout → status poll until healthy → public-host GET expecting 200). A fail outcome means one of: (a) /deploy/new is returning non-2xx (api crashed, GHCR auth broken, tier-limit miscount), (b) the deploy row stays `building` past the 90s budget OR flips to `failed` (Kaniko crash, image-pull-backoff, the exact stuck-build class that hid the 2026-05-30 morning truehomie-api incident for ~30 minutes), or (c) the public *.deployment.instanode.dev URL returns non-200 after `healthy` (Ingress / TLS / pod-readiness regression). Cross-correlate against the audit_log row written by worker deploy_probe_failed (kind=deploy_probe_failed, actor='system:deploy_probe') AND the structured slog ERROR line deploy_probe_failed leg=... reason=... — same content on both surfaces. Source: worker/internal/jobs/deploy_probe.go (DeployProbeWorker), metric registered in worker/internal/metrics/metrics.go (DeployProbeOutcomeTotal). Threshold ABOVE 0 with 30m window: a single fail tick over 30 minutes is an unambiguous regression (two ticks at 60-minute cadence would be a full 90 minutes of broken deploys before paging — too long).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_deploy_probe_outcome_total) FROM Metric WHERE metricName = 'instant_deploy_probe_outcome_total' AND result = 'fail'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 1800,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
