@@ -1,0 +1,64 @@
+# instanode-api on CF Containers (staging).
+#
+# The api is a Go binary listening on :8080. CF Containers wraps it in a
+# Durable Object; the Worker shell in src/worker.ts forwards every HTTP
+# request to the container.
+#
+# Image: pulled from GHCR (built by api repo's CI on every push to master).
+
+name = "instanode-api"
+main = "src/worker.ts"
+compatibility_date = "2026-05-30"
+
+# Per-environment config keeps the staging deploy isolated from any future
+# prod deploy (which won't live here — production goes to a non-CF k8s).
+[env.staging]
+name = "instanode-api-staging"
+routes = [
+  { pattern = "api.staging.instanode.dev/*", custom_domain = true },
+]
+
+# Container backed by a Durable Object class.
+[[env.staging.containers]]
+class_name   = "ApiContainer"
+image        = "ghcr.io/instanode-dev/instant-api:staging"
+max_instances = 3
+instance_type = "standard"  # 1 vCPU, 4 GiB RAM, 8 GiB ephemeral disk
+
+[[env.staging.durable_objects.bindings]]
+name        = "API_CONTAINER"
+class_name  = "ApiContainer"
+
+[[env.staging.migrations]]
+tag            = "v1"
+new_sqlite_classes = ["ApiContainer"]
+
+# Env vars passed to the container. Secrets via `wrangler secret put`.
+[env.staging.vars]
+ENVIRONMENT          = "staging"
+OBJECT_STORE_BACKEND = "r2"
+R2_BUCKET_NAME       = "instant-shared-staging"
+# DATABASE_URL, REDIS_URL, NATS_URL, etc. resolve to other Container DOs
+# via service bindings — see [[env.staging.services]] block.
+
+# Service bindings — Worker can RPC into other Containers/Workers without
+# a public hostname.
+[[env.staging.services]]
+binding     = "PG_PLATFORM"
+service     = "instanode-pg-platform-staging"
+environment = "staging"
+
+[[env.staging.services]]
+binding     = "PROVISIONER"
+service     = "instanode-provisioner-staging"
+environment = "staging"
+
+[[env.staging.services]]
+binding     = "REDIS_PLATFORM"
+service     = "instanode-redis-platform-staging"
+environment = "staging"
+
+# Observability — send Container stdout/stderr to a CF Logpush sink.
+[env.staging.observability]
+enabled            = true
+head_sampling_rate = 1.0

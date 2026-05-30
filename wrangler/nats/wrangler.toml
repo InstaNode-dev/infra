@@ -1,0 +1,40 @@
+# nats — per-tenant NATS in a CF Container (staging).
+# NATS JetStream needs durable disk — NOT viable on ephemeral. Staging
+# runs core NATS only (no streams). /queue/new in staging returns a
+# legacy_open connection string. JetStream features test-skipped.
+
+name = "instanode-nats"
+main = "src/worker.ts"
+compatibility_date = "2026-05-30"
+
+[env.staging]
+name = "instanode-nats-staging"
+routes = [
+  { pattern = "nats-*.staging.instanode.dev/*", custom_domain = true },
+]
+
+[[env.staging.containers]]
+class_name    = "NatsContainer"
+# Custom image — wraps nats:2-alpine with /etc/nats/nats-server.conf
+# baked in (core NATS only, no JetStream, legacy_open auth — matches
+# prod's current auth posture).
+image         = "ghcr.io/instanode-dev/instant-nats:staging"
+max_instances = 10
+instance_type = "basic"
+
+[[env.staging.durable_objects.bindings]]
+name       = "NATS_CONTAINER"
+class_name = "NatsContainer"
+
+[[env.staging.migrations]]
+tag                = "v1"
+new_sqlite_classes = ["NatsContainer"]
+
+[env.staging.vars]
+# No -js flag → core NATS only. Document that JetStream is staging-disabled
+# in /tmp/cf-migration/shared/STAGING-LIMITATIONS.md.
+NATS_ARGS = "-m 8222"
+
+[env.staging.observability]
+enabled            = true
+head_sampling_rate = 1.0
