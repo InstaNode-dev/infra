@@ -173,7 +173,3 @@ jobs:
               repo:  context.repo.repo,
               body,
             });
-
-# (cf/staging-drop-cache touched this file so the Lint + schema-check
-# k8s manifests required check on the infra repo fires for this PR.
-# No semantic change.)
