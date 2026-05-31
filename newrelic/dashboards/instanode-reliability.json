@@ -232,6 +232,20 @@
           }
         },
         {
+          "title": "Tier-upgrade TTL promote outcomes (24h) — error must be 0",
+          "layout": { "column": 1, "row": 25, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_tier_upgrade_ttl_promote_total) FROM Metric WHERE metricName = 'instant_tier_upgrade_ttl_promote_total' TIMESERIES SINCE 24 hours ago FACET outcome"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
           "title": "Worker /healthz migration_count drift (api vs worker, 1h)",
           "layout": { "column": 7, "row": 19, "width": 6, "height": 3 },
           "visualization": { "id": "viz.line" },
