@@ -119,6 +119,26 @@ spec:
             summary: "NATS auth failures > 0 in 5m — tenants landing in legacy_open (no isolation)"
             description: "{{ $value }} NATS credential-issuance failures in 5m. Each failure = one tenant /queue/new that fell back to unauthenticated NATS. Check operator seed in nats-operator Secret matches running nats-server."
 
+        # ─────────────────────────────────────────────────────────────────────
+        # Tier-upgrade deployment-TTL promote failures (P1 fix, 2026-05-31).
+        # Source: api emits `instant_tier_upgrade_ttl_promote_total{outcome=…}`
+        # from billing.handleSubscriptionCharged after every paid-tier
+        # upgrade. outcome="error" means the promote tx errored — the upgrade
+        # itself still committed, but the team's deployment-TTL state may
+        # still carry 'auto_24h' until the operator runs
+        # `cmd/backfill-tier-ttl -apply` (idempotent). A single failure pages
+        # because it corresponds to a real paying customer whose deploys may
+        # auto-expire.
+        - alert: TierUpgradeTTLPromoteFailed
+          expr: increase(instant_tier_upgrade_ttl_promote_total{outcome="error"}[10m]) > 0
+          for: 0m
+          labels:
+            severity: critical
+            service: billing
+          annotations:
+            summary: "Tier-upgrade TTL-promote errored — paid team's deploys may still auto-expire (P1)"
+            description: "{{ $value }} promote failures in 10m. The Razorpay subscription.charged webhook upgraded the team but PromoteDeploymentTTLsForTeam errored — teams.default_deployment_ttl_policy and pre-upgrade auto_24h deploys may still be stale. Run `kubectl exec -n instant deploy/instant-api -- /app/backfill-tier-ttl -apply` (or from a checkout: `go run ./cmd/backfill-tier-ttl -apply`) to repair. The script is idempotent."
+
     # =========================================================================
     # Nightly backup CronJobs — postgres-customers / mongodb / redis-provision
     # =========================================================================

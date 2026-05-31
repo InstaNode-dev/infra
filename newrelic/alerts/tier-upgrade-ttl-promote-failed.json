@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — tier-upgrade TTL-promote failures [P1, paid user's deploys still auto-expire]",
+  "type": "NRQL",
+  "description": "P1. Page on ANY occurrence of an outcome='error' tick on instant_tier_upgrade_ttl_promote_total. This counter fires from handleSubscriptionCharged in api/internal/handlers/billing.go after a successful tier upgrade, when models.PromoteDeploymentTTLsForTeam errors. The upgrade itself committed (fail-open) but the team's default_deployment_ttl_policy may still be 'auto_24h' and their pre-upgrade auto_24h deploys may still auto-expire — exactly the regression the user reported on 2026-05-31 (paid user got 'expires in 6 hours' email after upgrade). Operator action: run `kubectl exec -n instant deploy/instant-api -- /app/backfill-tier-ttl -apply` (or `go run ./cmd/backfill-tier-ttl -apply` from a checkout) to repair the residual; the script is idempotent. Threshold is ABOVE 0 over 10m so a single failure pages within a renewal cycle.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_tier_upgrade_ttl_promote_total) FROM Metric WHERE metricName = 'instant_tier_upgrade_ttl_promote_total' AND outcome = 'error'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
