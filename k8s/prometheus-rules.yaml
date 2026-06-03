@@ -804,9 +804,17 @@ spec:
     - name: instant-worker-entitlement-drift
       rules:
         - alert: EntitlementDriftOutpacingRegrade
+          # Minimum-count floor (>= 1): the detected increase must exceed the
+          # regraded increase by at least one whole resource over the aligned 1h
+          # window. A bare `increase(...) > increase(...)` flaps at window edges
+          # near zero (sub-1 fractional increase() extrapolation on either series
+          # crossing back and forth); the `>= 1` floor plus `for: 30m` requires a
+          # real, sustained, whole-resource backlog before paging.
           expr: |
-            increase(instant_entitlement_drift_detected_total[1h])
-              > increase(instant_entitlement_regraded_total[1h])
+            (
+              increase(instant_entitlement_drift_detected_total[1h])
+                - increase(instant_entitlement_regraded_total[1h])
+            ) >= 1
           for: 30m
           labels:
             severity: critical
@@ -830,22 +838,29 @@ spec:
     # to 'failed' even when the build pod is GC'd first (Bug A, 2026-05-30 incident).
     # reason="DeadlineExceeded" = build slot timing out for many tenants (image bloat /
     # degraded GHCR push); reason="BackoffLimitExceeded" = the modal per-customer
-    # Dockerfile-error bucket. Threshold 0.5/s sustained 30m catches a platform-wide
-    # build degradation while tolerating individual bad Dockerfiles. NR mirror:
-    # newrelic/alerts/deploy-job-failed-detected.json.
+    # Dockerfile-error bucket. Threshold increase(...[30m]) >= 3 catches a platform-
+    # wide build degradation while tolerating one or two individual bad Dockerfiles.
+    # NR mirror: newrelic/alerts/deploy-job-failed-detected.json.
     - name: instant-worker-deploy-job-failed
       rules:
         - alert: DeployJobFailedDetected
+          # Absolute count over a 30m window, not a per-second rate. The previous
+          # `rate(...[15m]) > 0.5` = 30 failed build-Jobs/minute sustained 30m, a
+          # threshold a real silent-deploy-failure cluster (a handful of Failed
+          # Jobs) would never reach — so it could effectively never fire. `increase
+          # (...[30m]) >= 3` pages on a small cluster of failed build Jobs while
+          # tolerating one or two individual bad Dockerfiles (the modal per-customer
+          # BackoffLimitExceeded case). Matches newrelic/alerts/deploy-job-failed-detected.json.
           expr: |
-            sum(rate(instant_deploy_job_failed_detected_total[15m])) > 0.5
-          for: 30m
+            sum(increase(instant_deploy_job_failed_detected_total[30m])) >= 3
+          for: 5m
           labels:
             severity: critical
             service: worker
           annotations:
-            summary: "deploy build-Jobs failing > 0.5/s for 30m — platform-wide build degradation"
+            summary: "deploy build-Jobs failing — >= 3 in 30m, platform-wide build degradation"
             description: |
-              sum(rate(instant_deploy_job_failed_detected_total[15m])) > 0.5 for >30m.
+              sum(increase(instant_deploy_job_failed_detected_total[30m])) >= 3.
               deploy_status_reconcile is detecting Kaniko build Jobs landing in a Failed
               state at a sustained rate. reason="DeadlineExceeded" means the build slot is
               timing out for many tenants (image bloat or a degraded GHCR push path);

@@ -1,10 +1,10 @@
 {
   "name": "instant-worker — expiry deprovision failing (30m) [orphan infra accumulating]",
   "type": "NRQL",
-  "description": "Fires on a sustained non-zero rate of instant_expire_deprovision_failed_total. The 24h-TTL reaper marks anonymous/free resources deleted and asks the provisioner to tear down the physical backend (DeprovisionResource). When that teardown errors, per MR-P0-1a (BugBash 2026-05-20) the reaper LEAVES the row in its reapable status (it is NOT marked deleted) so the next tick retries — preventing a namespace/DB leak. A single transient failure self-heals on the next sweep; a SUSTAINED non-zero rate means the provisioner is failing teardowns and customer infra (k8s namespaces, customer DBs, Redis ACL users) is accumulating unreclaimed — a slow capacity leak. P1: recoverable but unbounded-cost-if-ignored. Source: worker/internal/jobs/expire.go reaper; counter ExpireDeprovisionFailedTotal in worker/internal/metrics/metrics.go.",
+  "description": "Fires on a sustained non-zero rate of instant_expire_deprovision_failed_total. The 24h-TTL reaper marks anonymous/free resources deleted and asks the provisioner to tear down the physical backend (DeprovisionResource). When that teardown errors, per MR-P0-1a (BugBash 2026-05-20) the reaper LEAVES the row in its reapable status (it is NOT marked deleted) so the next tick retries — preventing a namespace/DB leak. A single transient failure self-heals on the next sweep; a SUSTAINED non-zero rate means the provisioner is failing teardowns and customer infra (k8s namespaces, customer DBs, Redis ACL users) is accumulating unreclaimed — a slow capacity leak. Query is derivative(...,15 minutes) (NR ingests the counter as a cumulative monotonic OTLP sum; sum() over the window latches the all-time total and would stay above 0 forever after the first failure); ABOVE 0 sustained 30m means new teardown failures keep landing every window — a real sustained break, not a one-off blip. P1: recoverable but unbounded-cost-if-ignored. Source: worker/internal/jobs/expire.go reaper; counter ExpireDeprovisionFailedTotal in worker/internal/metrics/metrics.go.",
   "enabled": true,
   "nrql": {
-    "query": "SELECT sum(instant_expire_deprovision_failed_total) FROM Metric WHERE service = 'worker'"
+    "query": "SELECT derivative(instant_expire_deprovision_failed_total, 15 minutes) FROM Metric WHERE service = 'worker'"
   },
   "terms": [
     {

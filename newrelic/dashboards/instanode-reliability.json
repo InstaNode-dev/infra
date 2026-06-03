@@ -447,7 +447,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT sum(instant_entitlement_drift_detected_total) AS 'detected', sum(instant_entitlement_regraded_total) AS 'regraded' FROM Metric WHERE service = 'worker' TIMESERIES SINCE 6 hours ago"
+                "query": "SELECT rate(sum(instant_entitlement_drift_detected_total), 1 minute) AS 'detected/min', rate(sum(instant_entitlement_regraded_total), 1 minute) AS 'regraded/min' FROM Metric WHERE service = 'worker' TIMESERIES SINCE 6 hours ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -461,7 +461,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT sum(instant_entitlement_drift_detected_total) - sum(instant_entitlement_regraded_total) AS 'unregraded drift (1h)' FROM Metric WHERE service = 'worker' SINCE 1 hour ago"
+                "query": "SELECT derivative(instant_entitlement_drift_detected_total, 1 hour) - derivative(instant_entitlement_regraded_total, 1 hour) AS 'unregraded drift (1h)' FROM Metric WHERE service = 'worker' SINCE 1 hour ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false },
@@ -478,7 +478,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT sum(instant_deploy_job_failed_detected_total) AS 'build-Job failures (1h)' FROM Metric WHERE service = 'worker' SINCE 1 hour ago"
+                "query": "SELECT derivative(instant_deploy_job_failed_detected_total, 1 hour) AS 'build-Job failures (1h)' FROM Metric WHERE service = 'worker' SINCE 1 hour ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false },
@@ -495,7 +495,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT sum(instant_deploy_job_failed_detected_total) FROM Metric WHERE service = 'worker' FACET reason TIMESERIES SINCE 6 hours ago"
+                "query": "SELECT rate(sum(instant_deploy_job_failed_detected_total), 1 minute) FROM Metric WHERE service = 'worker' FACET reason TIMESERIES SINCE 6 hours ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -509,7 +509,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT sum(instant_billing_reconciler_gap_detected_total) FROM Metric WHERE service = 'worker' FACET direction TIMESERIES SINCE 6 hours ago"
+                "query": "SELECT rate(sum(instant_billing_reconciler_gap_detected_total), 1 minute) FROM Metric WHERE service = 'worker' FACET direction TIMESERIES SINCE 6 hours ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -523,7 +523,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT latest(instant_pg_pool_in_use) / latest(instant_pg_pool_max) AS 'in_use / max' FROM Metric WHERE metricName IN ('instant_pg_pool_in_use', 'instant_pg_pool_max') FACET service, pool TIMESERIES SINCE 3 hours ago"
+                "query": "SELECT filter(latest(instant_pg_pool_in_use), WHERE metricName = 'instant_pg_pool_in_use') / filter(latest(instant_pg_pool_max), WHERE metricName = 'instant_pg_pool_max' AND instant_pg_pool_max > 0) AS 'in_use / max' FROM Metric WHERE metricName IN ('instant_pg_pool_in_use', 'instant_pg_pool_max') FACET service, pool TIMESERIES SINCE 3 hours ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -537,7 +537,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT max(instant_pg_pool_in_use) / max(instant_pg_pool_max) AS 'peak in_use/max' FROM Metric WHERE metricName IN ('instant_pg_pool_in_use', 'instant_pg_pool_max') FACET service, pool SINCE 1 hour ago"
+                "query": "SELECT filter(max(instant_pg_pool_in_use), WHERE metricName = 'instant_pg_pool_in_use') / filter(max(instant_pg_pool_max), WHERE metricName = 'instant_pg_pool_max' AND instant_pg_pool_max > 0) AS 'peak in_use/max' FROM Metric WHERE metricName IN ('instant_pg_pool_in_use', 'instant_pg_pool_max') FACET service, pool SINCE 1 hour ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false },
@@ -554,7 +554,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT sum(instant_worker_goroutine_panics_recovered_total) AS 'panics recovered (1h)' FROM Metric WHERE service = 'worker' SINCE 1 hour ago"
+                "query": "SELECT derivative(instant_worker_goroutine_panics_recovered_total, 1 hour) AS 'panics recovered (1h)' FROM Metric WHERE service = 'worker' SINCE 1 hour ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false },
@@ -571,7 +571,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT sum(instant_redis_maxmemory_failed_total) AS 'maxmemory regrade failed' FROM Metric WHERE service = 'worker' TIMESERIES SINCE 6 hours ago"
+                "query": "SELECT rate(sum(instant_redis_maxmemory_failed_total), 1 minute) AS 'maxmemory regrade failed/min' FROM Metric WHERE service = 'worker' TIMESERIES SINCE 6 hours ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -585,7 +585,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT sum(instant_expire_deprovision_failed_total) AS 'deprovision failed' FROM Metric WHERE service = 'worker' TIMESERIES SINCE 6 hours ago"
+                "query": "SELECT rate(sum(instant_expire_deprovision_failed_total), 1 minute) AS 'deprovision failed/min' FROM Metric WHERE service = 'worker' TIMESERIES SINCE 6 hours ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
@@ -599,7 +599,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [0],
-                "query": "SELECT sum(instant_worker_goroutine_panics_recovered_total) FROM Metric WHERE service = 'worker' FACET site TIMESERIES SINCE 6 hours ago"
+                "query": "SELECT rate(sum(instant_worker_goroutine_panics_recovered_total), 1 minute) FROM Metric WHERE service = 'worker' FACET site TIMESERIES SINCE 6 hours ago"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }
