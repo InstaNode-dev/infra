@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — github_pushdeploy_total result=error [push-triggered deploys silently not running]",
+  "type": "NRQL",
+  "description": "P1 user-visible. Fires when instant_github_pushdeploy_total{result=\"error\"} is non-zero over ~15m. result=error means a GitHub push webhook was received and matched an installation+connection, but the deploy could NOT be enqueued due to an internal error (DB write failure, provisioner unreachable, quota check panic, etc.). result=rate_limited is expected and not alerted here — the user's push was intentionally suppressed by the per-installation rate limiter. result=no_connection means the push matched an installation but no deploy-connection exists for that repo/branch — expected on repos where the user hasn't linked a stack. An error is the only result that indicates a broken deploy pipeline: a developer pushes to their linked repo, expects a deploy, and nothing happens with no feedback. Cross-correlate against NR Logs api message='github.pushdeploy.error' (carries installation_id, repo, branch, raw error). Most likely root causes: (a) River job enqueue failing — DB unreachable; (b) deploy quota check returning an unexpected error instead of 402 (quota path panic); (c) a nil-pointer in the push-payload parser on an unusual GitHub event shape. Source: api/internal/handlers/github_webhook.go push handler → deploy enqueue path. Counter registered in api/internal/metrics/metrics.go as instant_github_pushdeploy_total{result}. Lazy metric — error label only appears after the first enqueue failure.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_github_pushdeploy_total) FROM Metric WHERE metricName = 'instant_github_pushdeploy_total' AND result = 'error'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 900,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

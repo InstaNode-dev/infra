@@ -725,3 +725,69 @@ spec:
               Cross-correlate against audit_log kind=deploy_probe_failed +
               the worker structured slog ERROR `deploy_probe_failed leg=...
               reason=...`. Source: worker/internal/jobs/deploy_probe.go.
+
+    # GitHub App push-to-deploy pipeline (P4, pre-staged 2026-06-03).
+    # Metrics emitted by api/internal/handlers/github_webhook.go:
+    #   instant_github_webhook_received_total{event,result}
+    #   instant_github_pushdeploy_total{result}
+    #   instant_github_app_token_mint_total{result}
+    # All three are lazy CounterVec — label series only materialise on
+    # the first observation of each {event,result} combination.
+    # Mirror of newrelic/alerts/github-webhook-bad-signature.json (P2)
+    # and newrelic/alerts/github-pushdeploy-error.json (P1).
+    - name: instant-github
+      rules:
+        # Bad-signature spike — spoofing or GITHUB_WEBHOOK_SECRET mismatch.
+        # P2/abuse: WARNING only; common on secret rotations that update one
+        # side before the other. A sustained rate across multiple 5m windows
+        # indicates an active spoofing campaign.
+        - alert: GitHubWebhookBadSignatureSpike
+          expr: |
+            increase(instant_github_webhook_received_total{result="bad_signature"}[10m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: api
+          annotations:
+            summary: "GitHub webhook bad_signature > 0 in 10m — spoofing attempt or GITHUB_WEBHOOK_SECRET mismatch"
+            description: |
+              instant_github_webhook_received_total{result="bad_signature"} > 0
+              for >10m. Either an attacker is probing the /webhooks/github endpoint
+              with forged payloads, or GITHUB_WEBHOOK_SECRET in instant-secrets has
+              drifted from the secret configured in the GitHub App settings (the
+              modal cause: secret rotated on one side without updating the other).
+              Investigate: grep NR Logs api message='github.webhook.bad_signature'
+              for delivery_id + client IP. If single-IP: active spoofing — rotate
+              secret + update GitHub App settings. If legitimate delivery_id: secret
+              mismatch — re-sync: `kubectl set env -n instant deploy/instant-api
+              GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32)` then update the GitHub
+              App webhook settings to match. Source: api/internal/handlers/
+              github_webhook.go. NR mirror: newrelic/alerts/github-webhook-bad-signature.json.
+
+        # Push-deploy enqueue error — developer pushes to linked repo, deploy
+        # silently not triggered due to an internal error (DB write, quota panic,
+        # provisioner unreachable). P1 user-visible: the only symptom is that no
+        # deploy appears in their dashboard. result=rate_limited and no_connection
+        # are not alerted here (expected states). Only result=error indicates a
+        # broken pipeline path.
+        - alert: GitHubPushDeployError
+          expr: |
+            increase(instant_github_pushdeploy_total{result="error"}[15m]) > 0
+          for: 15m
+          labels:
+            severity: critical
+            service: api
+          annotations:
+            summary: "GitHub push-to-deploy enqueue errors > 0 in 15m — pushes silently not deploying (P1)"
+            description: |
+              instant_github_pushdeploy_total{result="error"} > 0 for >15m.
+              A GitHub push webhook was received, matched an installation+connection,
+              but the deploy could NOT be enqueued due to an internal error. The user
+              sees: push to their linked repo → no deploy started → no error shown.
+              Investigate: grep NR Logs api message='github.pushdeploy.error' for
+              installation_id, repo, branch, and raw error. Common root causes:
+              (a) River job enqueue failing — DB unreachable; (b) deploy quota check
+              returning an unexpected error instead of 402; (c) nil-pointer in push
+              payload parser on an unusual GitHub event shape. Source: api/internal/
+              handlers/github_webhook.go push handler → deploy enqueue path.
+              NR mirror: newrelic/alerts/github-pushdeploy-error.json.

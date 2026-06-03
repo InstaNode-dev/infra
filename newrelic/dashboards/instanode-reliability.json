@@ -362,6 +362,82 @@
             ],
             "platformOptions": { "ignoreTimeRange": false }
           }
+        },
+        {
+          "title": "GitHub webhook — received by event+result (6h) [P4 push-to-deploy]",
+          "layout": { "column": 1, "row": 31, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_github_webhook_received_total) FROM Metric WHERE metricName = 'instant_github_webhook_received_total' FACET event, result TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "GitHub webhook — bad_signature count (1h, must be 0 in steady state)",
+          "layout": { "column": 7, "row": 31, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_github_webhook_received_total) AS 'bad_signature' FROM Metric WHERE metricName = 'instant_github_webhook_received_total' AND result = 'bad_signature' SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 1 }
+            ]
+          }
+        },
+        {
+          "title": "GitHub push-to-deploy — enqueued vs errors (6h)",
+          "layout": { "column": 10, "row": 31, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_github_pushdeploy_total) AS 'pushdeploy errors (1h)' FROM Metric WHERE metricName = 'instant_github_pushdeploy_total' AND result = 'error' SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "CRITICAL", "value": 1 }
+            ]
+          }
+        },
+        {
+          "title": "GitHub push-to-deploy — result breakdown (6h)",
+          "layout": { "column": 1, "row": 34, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.stacked-bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_github_pushdeploy_total) FROM Metric WHERE metricName = 'instant_github_pushdeploy_total' FACET result TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "GitHub App token mint — result breakdown (6h)",
+          "layout": { "column": 7, "row": 34, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_github_app_token_mint_total) FROM Metric WHERE metricName = 'instant_github_app_token_mint_total' FACET result TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
         }
       ]
     }
