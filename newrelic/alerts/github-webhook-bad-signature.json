@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — github_webhook_received bad_signature elevated [spoofing or secret mismatch]",
+  "type": "NRQL",
+  "description": "P2/abuse. Fires when instant_github_webhook_received_total{result=\"bad_signature\"} rate is elevated over ~10m. A non-zero bad_signature count means one of: (a) an attacker is probing the /webhooks/github endpoint with forged payloads (spoofing), (b) the GITHUB_WEBHOOK_SECRET in instant-secrets has drifted from the secret configured in the GitHub App settings — the most common cause after a secret rotation on one side only, (c) a third-party tool is forwarding GitHub webhooks to the wrong endpoint with the wrong secret. Cross-correlate against NR Logs for api service message='github.webhook.bad_signature' which carries the delivery_id, x-github-event, and the client IP. If the rate tracks with a single IP or delivery_id range, treat as an active spoofing attempt; rotate the webhook secret immediately and update both instant-secrets (kubectl) and the GitHub App webhook settings. If it tracks with a legitimate GitHub delivery ID and no IP anomaly, treat as secret mismatch: re-sync GITHUB_WEBHOOK_SECRET. Source: api/internal/handlers/github_webhook.go; counter registered in api/internal/metrics/metrics.go as instant_github_webhook_received_total{event,result}. Lazy metric — bad_signature label series only appears after the first malformed delivery.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_github_webhook_received_total) FROM Metric WHERE metricName = 'instant_github_webhook_received_total' AND result = 'bad_signature'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
