@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — entitlement drift outpacing regrade (30m) [upgrades landing team row before infra cap]",
+  "type": "NRQL",
+  "description": "Fires when the entitlement_reconciler is DETECTING more drifted Postgres resources than it is successfully RE-GRADING over a rolling window — i.e. drift is accumulating faster than the fix lands. instant_entitlement_drift_detected_total counts postgres resources found with a connection cap that no longer matches their team's plan tier (the F6 partial-upgrade symptom: the team row flipped to the paid tier but the backend cap did not follow). instant_entitlement_regraded_total counts the resources the reconciler then successfully brought up to the entitled value (provisioner returned applied=true). In steady state every detected drift is regraded on the same sweep, so detected ≈ regraded. When detected sustainedly EXCEEDS regraded, paying customers are stuck on lower-tier backend limits and the reconciler can't keep up (gRPC errors / provisioner skips — see the companion entitlement-regrade-failed alert). P1: user-visible, recoverable. Source: worker/internal/jobs/entitlement_reconciler.go; both counters in worker/internal/metrics/metrics.go (EntitlementDriftDetectedTotal, EntitlementRegradedTotal).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_entitlement_drift_detected_total) - sum(instant_entitlement_regraded_total) FROM Metric WHERE service = 'worker'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 1800,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 180,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
