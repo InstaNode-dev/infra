@@ -1,18 +1,18 @@
 {
   "name": "instant-worker — deploy build-Job failures detected (30m) [silent-deploy-failure backstop]",
   "type": "NRQL",
-  "description": "Fires when deploy_status_reconcile detects Kaniko build Jobs landing in a Failed state at a sustained rate. instant_deploy_job_failed_detected_total is the metric from the 2026-05-30 silent-deploy-failure incident (CLAUDE.md rule 27, Bug A): the reconciler now queries BatchV1().Jobs after the runtime Deployment query, so a Failed build Job (BackoffLimitExceeded / DeadlineExceeded) flips the deployments row to 'failed' even when the build pod was GC'd before the runtime Deployment existed. reason=\"DeadlineExceeded\" = the platform's Kaniko build slot is timing out for many tenants (image bloat / degraded GHCR push path); reason=\"BackoffLimitExceeded\" = the modal Dockerfile-error bucket (per-customer, expected at a low rate). P1: user-visible, recoverable — a customer's deploy silently failed. Threshold 0.5/s sustained 30m catches a platform-wide build degradation while tolerating individual bad Dockerfiles. Source: worker/internal/jobs/deploy_status_reconcile.go; counter DeployJobFailedDetectedTotal in worker/internal/metrics/metrics.go.",
+  "description": "Fires when deploy_status_reconcile detects Kaniko build Jobs landing in a Failed state at a sustained rate. instant_deploy_job_failed_detected_total is the metric from the 2026-05-30 silent-deploy-failure incident (CLAUDE.md rule 27, Bug A): the reconciler now queries BatchV1().Jobs after the runtime Deployment query, so a Failed build Job (BackoffLimitExceeded / DeadlineExceeded) flips the deployments row to 'failed' even when the build pod was GC'd before the runtime Deployment existed. reason=\"DeadlineExceeded\" = the platform's Kaniko build slot is timing out for many tenants (image bloat / degraded GHCR push path); reason=\"BackoffLimitExceeded\" = the modal Dockerfile-error bucket (per-customer, expected at a low rate). P1: user-visible, recoverable — a customer's deploy silently failed. The query is derivative(...,30 minutes) per reason (NR ingests the counter as a cumulative monotonic OTLP sum; rate(...,1 second) > 0.5 = 30 failed Jobs/min sustained 30m, which a real silent-deploy-failure cluster of a handful of Jobs would never reach, so the original threshold could effectively never fire). ABOVE_OR_EQUALS 3 over a 30m window pages on a small cluster of failed build Jobs while tolerating one or two individual bad Dockerfiles. Source: worker/internal/jobs/deploy_status_reconcile.go; counter DeployJobFailedDetectedTotal in worker/internal/metrics/metrics.go.",
   "enabled": true,
   "nrql": {
-    "query": "SELECT rate(sum(instant_deploy_job_failed_detected_total), 1 second) FROM Metric WHERE service = 'worker' FACET reason"
+    "query": "SELECT derivative(instant_deploy_job_failed_detected_total, 30 minutes) FROM Metric WHERE service = 'worker' FACET reason"
   },
   "terms": [
     {
       "priority": "CRITICAL",
-      "operator": "ABOVE",
-      "threshold": 0.5,
-      "thresholdDuration": 1800,
-      "thresholdOccurrences": "ALL"
+      "operator": "ABOVE_OR_EQUALS",
+      "threshold": 3,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
     }
   ],
   "signal": {
