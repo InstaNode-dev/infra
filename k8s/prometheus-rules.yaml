@@ -194,6 +194,33 @@ spec:
             summary: "Backup Job {{ $labels.cronjob }} most recent run is in Failed state"
             description: "kube_job_status_failed > 0 for backup Job in instant-data. Pull pod logs and re-run manually if needed: see infra/BACKUP-RESTORE-RUNBOOK.md."
 
+        # Per-tenant (customer) backup runner — worker metric, distinct from the
+        # CronJob alerts above. instant_customer_backup_failed_total{reason}.
+        # A clean failure here previously paged no one (stale=36h, no-followup=
+        # stuck-only). reason="auth" = credential drift: SLA breach, won't
+        # self-heal → CRITICAL. Any other reason → WARNING.
+        - alert: CustomerBackupCredentialFailure
+          expr: |
+            increase(instant_customer_backup_failed_total{reason="auth"}[15m]) > 0
+          for: 0m
+          labels:
+            severity: critical
+            service: backup
+          annotations:
+            summary: "Customer backup failing with credential/auth error (stored connection_url drifted from the live DB role)"
+            description: "A per-tenant backup's pg_dump was rejected by the customer Postgres (password auth failed / role missing). This won't self-heal — every scheduled backup for that resource keeps failing, breaking the paid-tier durability promise. Find it: worker log jobs.customer_backup_runner.failed reason=auth (carries backup_id + raw stderr). Re-sync the credential per infra/BACKUP-RESTORE-RUNBOOK.md. NR: newrelic/alerts/customer-backup-failed.json."
+
+        - alert: CustomerBackupFailures
+          expr: |
+            increase(instant_customer_backup_failed_total[1h]) > 0
+          for: 0m
+          labels:
+            severity: warning
+            service: backup
+          annotations:
+            summary: "Customer backup runs failing ({{ $labels.reason }})"
+            description: "One or more per-tenant backup runs failed in the last hour. reason label distinguishes auth (credential drift, see the CRITICAL companion) from transient dump/upload failures (retried next run). Success ratio tile on the customer-visible-backup-health dashboard."
+
     # instant-worker — propagation_runner dead-letter alerts (CHAOS F3, 2026-05-20).
     # Fires on the worker's instant_propagation_dead_lettered_total counter
     # (introduced in worker repo, see metrics.go::PropagationDeadLetteredTotal).
