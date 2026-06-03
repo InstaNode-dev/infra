@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — customer backup FAILED (credential/auth) [SLA breach]",
+  "description": "Page when a per-tenant (customer) backup run fails with reason='auth' — i.e. pg_dump was rejected by the customer's Postgres (password authentication failed / role missing / permission denied). This means the stored connection_url credential has drifted from the live DB role; it will NOT self-heal and every scheduled backup for that resource keeps failing, so the paid-tier durability/SLA promise is broken for any data written since the last good backup.\n\nWhy this alert exists: the pre-existing backup alerts MISS a clean failure — backup-stale-36h.json only fires after 36h of no success (far too slow for an SLA breach), and backup-requested-no-followup.json only fires on STUCK rows (a prompt failure emits backup.failed so it counts as 'followed up'). A failed backup previously paged no one promptly. (Source: worker markFailed slog line jobs.customer_backup_runner.failed with structured field reason; metric instant_customer_backup_failed_total{reason=\"auth\"}.)\n\nWhen this fires:\n  1. Identify the resource: NR Logs `service='worker' message LIKE '%customer_backup_runner.failed%' reason='auth'` — the line carries backup_id + internal_detail (the raw pg_dump stderr, with the role name).\n  2. Confirm drift: decrypt resources.connection_url for that resource and test a real login against the customer Postgres. If the role rejects it, the stored credential is stale.\n  3. Re-sync the credential (re-provision the role password or update the stored connection_url) — do NOT auto-rotate blindly (it can break the customer's live app).\n  4. Re-run the backup once fixed: it will pick up on the next scheduled tick or via a manual enqueue.\n  See infra/BACKUP-RESTORE-RUNBOOK.md. The customer-facing message is sanitized (no host/role leak); full detail is in the worker log only.",
+  "type": "NRQL",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'worker' AND message LIKE '%customer_backup_runner.failed%' AND reason = 'auth'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 1800,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

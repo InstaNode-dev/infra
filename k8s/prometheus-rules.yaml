@@ -194,6 +194,33 @@ spec:
             summary: "Backup Job {{ $labels.cronjob }} most recent run is in Failed state"
             description: "kube_job_status_failed > 0 for backup Job in instant-data. Pull pod logs and re-run manually if needed: see infra/BACKUP-RESTORE-RUNBOOK.md."
 
+        # Per-tenant (customer) backup runner — worker metric, distinct from the
+        # CronJob alerts above. instant_customer_backup_failed_total{reason}.
+        # A clean failure here previously paged no one (stale=36h, no-followup=
+        # stuck-only). reason="auth" = credential drift: SLA breach, won't
+        # self-heal → CRITICAL. Any other reason → WARNING.
+        - alert: CustomerBackupCredentialFailure
+          expr: |
+            increase(instant_customer_backup_failed_total{reason="auth"}[15m]) > 0
+          for: 0m
+          labels:
+            severity: critical
+            service: backup
+          annotations:
+            summary: "Customer backup failing with credential/auth error (stored connection_url drifted from the live DB role)"
+            description: "A per-tenant backup's pg_dump was rejected by the customer Postgres (password auth failed / role missing). This won't self-heal — every scheduled backup for that resource keeps failing, breaking the paid-tier durability promise. Find it: worker log jobs.customer_backup_runner.failed reason=auth (carries backup_id + raw stderr). Re-sync the credential per infra/BACKUP-RESTORE-RUNBOOK.md. NR: newrelic/alerts/customer-backup-failed.json."
+
+        - alert: CustomerBackupFailures
+          expr: |
+            increase(instant_customer_backup_failed_total[1h]) > 0
+          for: 0m
+          labels:
+            severity: warning
+            service: backup
+          annotations:
+            summary: "Customer backup runs failing ({{ $labels.reason }})"
+            description: "One or more per-tenant backup runs failed in the last hour. reason label distinguishes auth (credential drift, see the CRITICAL companion) from transient dump/upload failures (retried next run). Success ratio tile on the customer-visible-backup-health dashboard."
+
     # instant-worker — propagation_runner dead-letter alerts (CHAOS F3, 2026-05-20).
     # Fires on the worker's instant_propagation_dead_lettered_total counter
     # (introduced in worker repo, see metrics.go::PropagationDeadLetteredTotal).
@@ -698,3 +725,257 @@ spec:
               Cross-correlate against audit_log kind=deploy_probe_failed +
               the worker structured slog ERROR `deploy_probe_failed leg=...
               reason=...`. Source: worker/internal/jobs/deploy_probe.go.
+
+    # GitHub App push-to-deploy pipeline (P4, pre-staged 2026-06-03).
+    # Metrics emitted by api/internal/handlers/github_webhook.go:
+    #   instant_github_webhook_received_total{event,result}
+    #   instant_github_pushdeploy_total{result}
+    #   instant_github_app_token_mint_total{result}
+    # All three are lazy CounterVec — label series only materialise on
+    # the first observation of each {event,result} combination.
+    # Mirror of newrelic/alerts/github-webhook-bad-signature.json (P2)
+    # and newrelic/alerts/github-pushdeploy-error.json (P1).
+    - name: instant-github
+      rules:
+        # Bad-signature spike — spoofing or GITHUB_WEBHOOK_SECRET mismatch.
+        # P2/abuse: WARNING only; common on secret rotations that update one
+        # side before the other. A sustained rate across multiple 5m windows
+        # indicates an active spoofing campaign.
+        - alert: GitHubWebhookBadSignatureSpike
+          expr: |
+            increase(instant_github_webhook_received_total{result="bad_signature"}[10m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: api
+          annotations:
+            summary: "GitHub webhook bad_signature > 0 in 10m — spoofing attempt or GITHUB_WEBHOOK_SECRET mismatch"
+            description: |
+              instant_github_webhook_received_total{result="bad_signature"} > 0
+              for >10m. Either an attacker is probing the /webhooks/github endpoint
+              with forged payloads, or GITHUB_WEBHOOK_SECRET in instant-secrets has
+              drifted from the secret configured in the GitHub App settings (the
+              modal cause: secret rotated on one side without updating the other).
+              Investigate: grep NR Logs api message='github.webhook.bad_signature'
+              for delivery_id + client IP. If single-IP: active spoofing — rotate
+              secret + update GitHub App settings. If legitimate delivery_id: secret
+              mismatch — re-sync: `kubectl set env -n instant deploy/instant-api
+              GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32)` then update the GitHub
+              App webhook settings to match. Source: api/internal/handlers/
+              github_webhook.go. NR mirror: newrelic/alerts/github-webhook-bad-signature.json.
+
+        # Push-deploy enqueue error — developer pushes to linked repo, deploy
+        # silently not triggered due to an internal error (DB write, quota panic,
+        # provisioner unreachable). P1 user-visible: the only symptom is that no
+        # deploy appears in their dashboard. result=rate_limited and no_connection
+        # are not alerted here (expected states). Only result=error indicates a
+        # broken pipeline path.
+        - alert: GitHubPushDeployError
+          expr: |
+            increase(instant_github_pushdeploy_total{result="error"}[15m]) > 0
+          for: 15m
+          labels:
+            severity: critical
+            service: api
+          annotations:
+            summary: "GitHub push-to-deploy enqueue errors > 0 in 15m — pushes silently not deploying (P1)"
+            description: |
+              instant_github_pushdeploy_total{result="error"} > 0 for >15m.
+              A GitHub push webhook was received, matched an installation+connection,
+              but the deploy could NOT be enqueued due to an internal error. The user
+              sees: push to their linked repo → no deploy started → no error shown.
+              Investigate: grep NR Logs api message='github.pushdeploy.error' for
+              installation_id, repo, branch, and raw error. Common root causes:
+              (a) River job enqueue failing — DB unreachable; (b) deploy quota check
+              returning an unexpected error instead of 402; (c) nil-pointer in push
+              payload parser on an unusual GitHub event shape. Source: api/internal/
+              handlers/github_webhook.go push handler → deploy enqueue path.
+              NR mirror: newrelic/alerts/github-pushdeploy-error.json.
+
+    # instant-worker — entitlement drift outpacing regrade (Rule 25 sweep 2026-06-04).
+    # The entitlement_reconciler DETECTS Postgres resources whose connection cap no
+    # longer matches their team's plan tier (instant_entitlement_drift_detected_total)
+    # and RE-GRADES them up to the entitled value (instant_entitlement_regraded_total).
+    # In steady state detected ≈ regraded on each sweep. When detected outpaces
+    # regraded over a window, paying customers are stuck on lower-tier backend limits
+    # and the reconciler can't keep up (pair with EntitlementRegradeFailed above, which
+    # fires on the gRPC-error / provisioner-skip leg). NR mirror:
+    # newrelic/alerts/entitlement-drift-outpacing-regrade.json.
+    - name: instant-worker-entitlement-drift
+      rules:
+        - alert: EntitlementDriftOutpacingRegrade
+          expr: |
+            increase(instant_entitlement_drift_detected_total[1h])
+              > increase(instant_entitlement_regraded_total[1h])
+          for: 30m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "entitlement drift detected faster than regraded for 30m — paying customers on wrong backend limits"
+            description: |
+              increase(instant_entitlement_drift_detected_total[1h]) >
+              increase(instant_entitlement_regraded_total[1h]) for >30m. The
+              entitlement_reconciler is finding more Postgres resources drifted below
+              their team's paid tier than it can successfully re-grade — drift is
+              accumulating. This is the F6 partial-upgrade symptom at scale: team rows
+              flip to the paid tier but the backend connection cap lags. Grep worker
+              logs for `jobs.entitlement_reconciler.regrade_failed` (the failing leg)
+              and check provisioner /healthz + circuit-breaker state. Pair with
+              EntitlementRegradeFailed (instant_entitlement_regrade_failed_total).
+
+    # instant-worker — silent-deploy-failure backstop (CLAUDE.md rule 27, Rule 25
+    # sweep 2026-06-04). deploy_status_reconcile now queries BatchV1().Jobs after the
+    # runtime Deployment query so a Failed Kaniko build Job flips the deployments row
+    # to 'failed' even when the build pod is GC'd first (Bug A, 2026-05-30 incident).
+    # reason="DeadlineExceeded" = build slot timing out for many tenants (image bloat /
+    # degraded GHCR push); reason="BackoffLimitExceeded" = the modal per-customer
+    # Dockerfile-error bucket. Threshold 0.5/s sustained 30m catches a platform-wide
+    # build degradation while tolerating individual bad Dockerfiles. NR mirror:
+    # newrelic/alerts/deploy-job-failed-detected.json.
+    - name: instant-worker-deploy-job-failed
+      rules:
+        - alert: DeployJobFailedDetected
+          expr: |
+            sum(rate(instant_deploy_job_failed_detected_total[15m])) > 0.5
+          for: 30m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "deploy build-Jobs failing > 0.5/s for 30m — platform-wide build degradation"
+            description: |
+              sum(rate(instant_deploy_job_failed_detected_total[15m])) > 0.5 for >30m.
+              deploy_status_reconcile is detecting Kaniko build Jobs landing in a Failed
+              state at a sustained rate. reason="DeadlineExceeded" means the build slot is
+              timing out for many tenants (image bloat or a degraded GHCR push path);
+              reason="BackoffLimitExceeded" is the per-customer Dockerfile-error bucket
+              (expected at a low rate — a platform-wide spike means something common
+              broke). This is the metric from the 2026-05-30 silent-deploy-failure
+              incident. Check ghcr.io status, the deploy.yml CI push step, and Kaniko
+              build pod logs in instant-deploy-* namespaces. Source:
+              worker/internal/jobs/deploy_status_reconcile.go.
+
+    # instant-worker — billing reconciler gap detected (Rule 25 sweep 2026-06-04).
+    # instant_billing_reconciler_gap_detected_total is the PRIMARY signal for a
+    # dropped Razorpay webhook: each gap = a team whose teams.plan_tier disagrees
+    # with Razorpay's live subscription state. direction="upgrade" = paid but DB
+    # stuck low (customer-harming); direction="downgrade" = DB still high after a
+    # cancel (revenue leak). The reconciler self-corrects (gap_corrected) but a
+    # steady drip of detections means the synchronous webhook path is dropping
+    # payments. Threshold >3 in 15m avoids paging on a single transient race the
+    # next sweep clears. NR mirror: newrelic/alerts/billing-reconciler-gap-detected.json.
+    - name: instant-worker-billing-gap
+      rules:
+        - alert: BillingReconcilerGapDetected
+          expr: |
+            sum(increase(instant_billing_reconciler_gap_detected_total[15m])) by (direction) > 3
+          for: 0m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "billing reconciler gap_detected > 3 in 15m (direction={{ $labels.direction }}) — dropped Razorpay webhook"
+            description: |
+              instant_billing_reconciler_gap_detected_total{direction="{{ $labels.direction }}"} > 3 in 15m.
+              The billing reconciler found teams whose DB plan_tier disagrees with
+              Razorpay's live subscription state — the primary signal for dropped
+              Razorpay webhooks. direction="upgrade" = paying customer stuck on a lower
+              tier (charge it and they don't get it); direction="downgrade" = team still
+              on a higher tier after a cancel/downgrade (revenue leak). The reconciler
+              self-corrects via instant_billing_reconciler_gap_corrected_total, but a
+              sustained detection rate means the synchronous webhook → upgrade path is
+              dropping events — investigate the Razorpay webhook handler + delivery logs.
+              Source: worker/internal/jobs/billing_reconciler.go.
+
+    # instant-* — Postgres pool saturation (Wave-3 chaos-verify 2026-05-21, Rule 25
+    # sweep 2026-06-04). instant_pg_pool_in_use / instant_pg_pool_max is the saturation
+    # ratio, emitted independently by api, worker AND provisioner (each labelled by
+    # pool, e.g. platform_db), sampled every 5s. The 2026-05-21 burst exhausted the
+    # shared DO Managed Postgres user-connection ceiling and starved worker's
+    # event_email_forwarder. The by-(service,pool) facet localizes which process is
+    # saturating. NR mirror: newrelic/alerts/pg-pool-saturation.json.
+    - name: instant-pg-pool
+      rules:
+        - alert: PGPoolSaturation
+          expr: |
+            max(instant_pg_pool_in_use) by (service, pool)
+              / clamp_min(max(instant_pg_pool_max) by (service, pool), 1) > 0.8
+          for: 5m
+          labels:
+            severity: critical
+            service: platform
+          annotations:
+            summary: "Postgres pool > 80% saturated for 5m (service={{ $labels.service }} pool={{ $labels.pool }})"
+            description: |
+              instant_pg_pool_in_use / instant_pg_pool_max > 0.8 for >5m on
+              service={{ $labels.service }} pool={{ $labels.pool }}. The process is
+              running near its SetMaxOpenConns ceiling; new connection acquisitions will
+              start queueing (watch instant_pg_pool_wait_count steepening) and, against
+              the shared DO Managed Postgres user-connection cap, can starve OTHER
+              processes — the 2026-05-21 Wave-3 class where a /db/new burst left worker's
+              event_email_forwarder with no slots ("remaining connection slots are
+              reserved for non-replication superuser connections"). Decide: raise the
+              pool max, add a read replica, or shed load. Source: api/worker/provisioner
+              pool_metrics.go exporters.
+
+    # instant-worker — Redis maxmemory regrade failing (A4 reconciler, Rule 25 sweep
+    # 2026-06-04). instant_redis_maxmemory_failed_total increments when the A4
+    # entitlement_reconciler arm's provisioner RegradeResource call returns a gRPC
+    # transport error (NOT a soft skip — those are instant_redis_maxmemory_skipped_total).
+    # A sustained non-zero rate means the maxmemory cap is not being pushed onto one or
+    # more dedicated Redis pods → that tenant's Redis quota is NOT enforced. Fail-soft
+    # (retried next sweep), so a transient blip self-heals. P2 abuse/observability. NR
+    # mirror: newrelic/alerts/redis-maxmemory-regrade-failed.json.
+    - name: instant-worker-redis-maxmemory
+      rules:
+        - alert: RedisMaxmemoryRegradeFailed
+          expr: |
+            sum(rate(instant_redis_maxmemory_failed_total[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: worker
+          annotations:
+            summary: "Redis maxmemory regrade failing for 15m — quota not enforced on dedicated pods"
+            description: |
+              instant_redis_maxmemory_failed_total rate > 0 for >15m. The A4
+              entitlement_reconciler arm could not push the tier maxmemory cap onto one
+              or more dedicated k8s Redis pods (provisioner RegradeResource returned a
+              gRPC error). Those tenants' Redis quota is not being enforced — a tenant
+              can grow unbounded and evict/starve neighbours on the node. Fail-soft: the
+              row retries on the next sweep, so a single blip self-heals; a sustained
+              rate means the provisioner ↔ Redis path is broken. Check provisioner
+              /healthz, the redis-auth Secret, and worker logs
+              `jobs.entitlement_reconciler` Redis arm. Source:
+              worker/internal/jobs/entitlement_reconciler.go.
+
+    # instant-worker — expiry deprovision failing (MR-P0-1a, Rule 25 sweep 2026-06-04).
+    # instant_expire_deprovision_failed_total increments when the 24h-TTL reaper's
+    # provisioner DeprovisionResource call errors. Per MR-P0-1a the reaper LEAVES the
+    # row reapable (not marked deleted) so the next tick retries, preventing a leak.
+    # A single transient failure self-heals; a SUSTAINED rate means teardowns are
+    # broken and orphan infra (k8s namespaces, customer DBs, Redis ACL users) is
+    # accumulating unreclaimed — a slow capacity/cost leak. NR mirror:
+    # newrelic/alerts/expire-deprovision-failed.json.
+    - name: instant-worker-expire-deprovision
+      rules:
+        - alert: ExpireDeprovisionFailed
+          expr: |
+            sum(rate(instant_expire_deprovision_failed_total[15m])) > 0
+          for: 30m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "expiry deprovision failing for 30m — orphan infra accumulating"
+            description: |
+              instant_expire_deprovision_failed_total rate > 0 for >30m. The 24h-TTL
+              reaper is failing to tear down the physical backend for expired
+              anonymous/free resources (provisioner DeprovisionResource errored). Per
+              MR-P0-1a the row is left reapable so the next tick retries — so a single
+              blip self-heals — but a sustained rate means teardowns are broken and
+              orphan infrastructure (k8s namespaces, customer DBs, Redis ACL users) is
+              piling up unreclaimed, a slow capacity and cost leak. Cross-check the
+              orphan_sweep alerts (the second line of defence) and provisioner /healthz.
+              Source: worker/internal/jobs/expire.go.
