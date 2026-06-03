@@ -1,0 +1,30 @@
+{
+  "name": "instant-* — Postgres pool saturation > 80% (5m) [connection brownout]",
+  "type": "NRQL",
+  "description": "Fires when any service's Postgres connection pool is running above 80% of its SetMaxOpenConns ceiling for 5 minutes. instant_pg_pool_in_use / instant_pg_pool_max is the saturation ratio; emitted independently by api, worker, AND provisioner (each with label pool, e.g. platform_db), sampled every 5s by each process's pool-stats exporter. This is the 2026-05-21 Wave-3 chaos-verify class: a 50-concurrent /db/new burst exhausted the shared DigitalOcean Managed Postgres user-connection ceiling and worker's event_email_forwarder then failed with 'remaining connection slots are reserved for non-replication superuser connections'. The per-service FACET localizes which process is saturating so the operator doesn't have to guess. P1: user-visible, recoverable (raise pool max / add a read replica / shed load). Source: api+worker+provisioner pool_metrics.go exporters; gauges PGPoolInUse/PGPoolMax in each service's metrics.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT latest(instant_pg_pool_in_use) / latest(instant_pg_pool_max) FROM Metric WHERE metricName IN ('instant_pg_pool_in_use', 'instant_pg_pool_max') FACET service, pool"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0.8,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 1800,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

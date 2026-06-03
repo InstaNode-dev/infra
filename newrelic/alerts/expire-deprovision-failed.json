@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — expiry deprovision failing (30m) [orphan infra accumulating]",
+  "type": "NRQL",
+  "description": "Fires on a sustained non-zero rate of instant_expire_deprovision_failed_total. The 24h-TTL reaper marks anonymous/free resources deleted and asks the provisioner to tear down the physical backend (DeprovisionResource). When that teardown errors, per MR-P0-1a (BugBash 2026-05-20) the reaper LEAVES the row in its reapable status (it is NOT marked deleted) so the next tick retries — preventing a namespace/DB leak. A single transient failure self-heals on the next sweep; a SUSTAINED non-zero rate means the provisioner is failing teardowns and customer infra (k8s namespaces, customer DBs, Redis ACL users) is accumulating unreclaimed — a slow capacity leak. P1: recoverable but unbounded-cost-if-ignored. Source: worker/internal/jobs/expire.go reaper; counter ExpireDeprovisionFailedTotal in worker/internal/metrics/metrics.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_expire_deprovision_failed_total) FROM Metric WHERE service = 'worker'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 1800,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 180,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
