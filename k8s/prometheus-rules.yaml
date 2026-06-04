@@ -994,3 +994,58 @@ spec:
               piling up unreclaimed, a slow capacity and cost leak. Cross-check the
               orphan_sweep alerts (the second line of defence) and provisioner /healthz.
               Source: worker/internal/jobs/expire.go.
+
+    # Hot-pool reaper (provisioner sweep #8). The maintenance loop reaps 'failed'
+    # pool_items (deprovision backing infra + delete the row) and reports — but
+    # does NOT auto-reap — pool_items stuck in 'assigned' past 30m. Source:
+    # provisioner/internal/pool/{manager,metrics}.go. NR mirrors:
+    # newrelic/alerts/pool-reap-errors.json + pool-stuck-assigned.json.
+    - name: instant-provisioner-pool-reaper
+      rules:
+        - alert: PoolReapErrors
+          expr: |
+            sum(rate(instant_pool_reap_total{outcome=~"deprovision_err|delete_err"}[15m])) by (resource_type, outcome) > 0
+          for: 30m
+          labels:
+            severity: warning
+            service: provisioner
+          annotations:
+            summary: "pool reaper failing (outcome={{ $labels.outcome }} resource_type={{ $labels.resource_type }}) for 30m"
+            description: |
+              instant_pool_reap_total{outcome="{{ $labels.outcome }}"} rate > 0 for
+              >30m for resource_type={{ $labels.resource_type }}. The hot-pool reaper
+              found a 'failed' pool_item but could not fully reclaim it:
+              outcome="deprovision_err" = the backend Deprovision call errored (row
+              left for next tick); outcome="delete_err" = Deprovision succeeded but
+              the pool_items row DELETE failed (the row will be retried, but the
+              backing infra is already gone — watch for double-deprovision noise). A
+              single transient blip self-heals on the next 30s tick; a sustained rate
+              means the reaper is wedged and 'failed' pool infra (customer DBs, Redis
+              ACL users, NATS accounts) is accumulating unreclaimed — a slow capacity
+              and cost leak. Check provisioner pod logs for `pool.reapStale` errors and
+              the targeted backend's /healthz. Source:
+              provisioner/internal/pool/manager.go (reapStale).
+
+        - alert: PoolStuckAssigned
+          expr: |
+            max(instant_pool_stuck_assigned) by (resource_type) > 0
+          for: 1h
+          labels:
+            severity: warning
+            service: provisioner
+          annotations:
+            summary: "pool_items stuck 'assigned' past 30m for resource_type={{ $labels.resource_type }} — leaked shared infra, operator action"
+            description: |
+              instant_pool_stuck_assigned{resource_type="{{ $labels.resource_type }}"}
+              > 0 sustained for >1h. One or more pool_items have sat in the 'assigned'
+              state past the 30m grace. The provisioner deliberately does NOT
+              auto-reap these: from its own DB an orphaned (crashed-claim) 'assigned'
+              row is indistinguishable from one a live api request successfully bound
+              to a resources row, and deprovisioning a bound item destroys live
+              customer infra (the truehomie-db DROP incident class). A persistently
+              non-zero value means the claim path is leaking 'assigned' rows and needs
+              MANUAL operator attention: cross-check pool_items.assigned_at against the
+              platform resources table (anti-join in a service that owns BOTH tables)
+              to decide whether each stuck row is a true orphan safe to reap or a live
+              binding. Source: provisioner/internal/pool/manager.go
+              (reportStuckAssigned).

@@ -1,0 +1,31 @@
+{
+  "name": "instant-provisioner — hot-pool reaper failing to reclaim 'failed' pool_items (reap error rate > 0 sustained 30m)",
+  "type": "NRQL",
+  "description": "P2 observability/abuse warning. instant_pool_reap_total{outcome IN (deprovision_err, delete_err)} > 0 sustained for >30 minutes. The hot-pool reaper (provisioner sweep #8 maintenance loop) found a 'failed' pool_item but could not fully reclaim it: outcome='deprovision_err' = the backend Deprovision call errored and the row was left for the next 30s tick; outcome='delete_err' = Deprovision succeeded but the pool_items row DELETE failed. A single transient blip self-heals on the next tick; a sustained rate means the reaper is wedged and 'failed' pool infra (customer DBs, Redis ACL users, NATS accounts) is accumulating unreclaimed — a slow capacity and cost leak. Runbook: kubectl logs the instant-provisioner pod for `pool.reapStale` errors, then walk the resource_type / outcome labels to the targeted backend's /healthz. Source: provisioner/internal/pool/manager.go (reapStale), metric declared in provisioner/internal/pool/metrics.go (poolReapTotal).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_pool_reap_total) FROM Metric WHERE metricName = 'instant_pool_reap_total' AND outcome IN ('deprovision_err', 'delete_err') FACET resource_type, outcome"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 1800,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
