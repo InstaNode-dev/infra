@@ -1049,3 +1049,98 @@ spec:
               to decide whether each stuck row is a true orphan safe to reap or a live
               binding. Source: provisioner/internal/pool/manager.go
               (reportStuckAssigned).
+
+    # instant-worker — continuous-monitoring synthetic flow matrix (PR: flow
+    # synthetic runner). The runner (worker/internal/jobs/flow_synthetic.go) runs
+    # the P0 flow matrix (healthz / auth_me / provision→reap) against prod every
+    # 5 min and emits instant_flow_test_total{flow,actor,tier,layer,result}. The
+    # whole layer is INERT until FLOW_SYNTHETIC_ENABLED=true, so these rules never
+    # fire until the operator lights the flag (and the metric series exist). NR
+    # mirrors: newrelic/alerts/flow-test-*.json + flow-synthetic-leak.json.
+    - name: instant-worker-flow-synthetic
+      rules:
+        - alert: FlowTestP0Fail
+          # ANY fail of a P0 user flow (provision, login read, deploy) in prod.
+          # 10m window = two consecutive 5-min ticks → unambiguous regression, not
+          # flake. P0 page. FACET-equivalent by flow so the responder sees which
+          # cell went red; cross-correlate the failing event's commitId attribute
+          # (InstantFlowTest) with /healthz .commit_id to name the bad deploy.
+          expr: |
+            sum(increase(instant_flow_test_total{result="fail"}[10m])) by (flow) > 0
+          for: 0m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "synthetic P0 flow failing in prod — {{ $labels.flow }}"
+            description: |
+              sum(increase(instant_flow_test_total{result="fail"}[10m])) by (flow) > 0.
+              The continuous-monitoring synthetic runner saw a P0 user flow fail twice
+              in a row against prod. flow="healthz" → the api itself is down; flow=
+              "auth_me" → the authenticated read/JWT-verify path broke; flow=
+              "provision_reap" → POST /db/new or the resource delete path broke. Read
+              the failing InstantFlowTest event's commitId attribute and compare to
+              /healthz .commit_id to name the deploy that introduced the red. Cross-
+              correlate the audit_log row (kind=flow_test_failed, actor=
+              'system:flow_synthetic') + the slog ERROR line flow_test_failed flow=...
+              reason=.... Source: worker/internal/jobs/flow_synthetic.go.
+        - alert: FlowTestLatencyRegression
+          # P95 of a flow's end-to-end latency over 30m crossing 5s = a 2P
+          # latency-regression signal (the per-flow budgets are 1–10s; 5s is a
+          # generous platform-wide floor that catches a real slowdown without
+          # paging on the provision→reap leg's normal multi-second round-trip).
+          expr: |
+            histogram_quantile(0.95, sum(rate(instant_flow_test_latency_seconds_bucket[30m])) by (le, flow)) > 5
+          for: 10m
+          labels:
+            severity: warning
+            service: worker
+          annotations:
+            summary: "synthetic flow P95 latency regression — {{ $labels.flow }}"
+            description: |
+              histogram_quantile(0.95, ... by (le, flow)) > 5s over 30m. A synthetic
+              flow is correct but slow — a latency regression in the api / provision
+              path. Not a page; investigate alongside the api latency dashboards.
+              Source: worker/internal/jobs/flow_synthetic.go.
+        - alert: FlowTestSilentDeath
+          # The synthetic stopped reporting entirely (no series in 15m) WHILE the
+          # runner is supposed to be enabled. A monitoring blind spot — the matrix
+          # would show stale-green. Only meaningful once the flag is on; absent
+          # series before enablement is expected (the `or vector(0)` keeps the
+          # rule from firing when the metric has never been observed).
+          expr: |
+            (sum(increase(instant_flow_test_total[15m])) or vector(0)) == 0
+          for: 15m
+          labels:
+            severity: warning
+            service: worker
+          annotations:
+            summary: "synthetic flow runner stopped reporting (silent death)"
+            description: |
+              No instant_flow_test_total observations in 15m. If FLOW_SYNTHETIC_ENABLED
+              is true this is a blind spot — the worker's flow_synthetic job stopped
+              ticking (River pool wedged, worker crashloop, or the periodic job
+              de-registered). If the flag is OFF this is expected; silence by leaving
+              the flag off or scope the rule to the enabled clusters. Source:
+              worker/internal/jobs/flow_synthetic.go.
+        - alert: FlowSyntheticLeak
+          # The rule-24 cleanup ledger breached: a synthetic resource the runner
+          # created was NOT reaped (delete path failed) → a real DO/k8s resource is
+          # leaking. Must stay 0. P2 (cost + the "never leak resources" promise).
+          expr: |
+            sum(increase(instant_flow_synthetic_reaped_total{outcome="leaked"}[1h])) > 0
+          for: 0m
+          labels:
+            severity: warning
+            service: worker
+          annotations:
+            summary: "synthetic runner leaked a resource (cleanup-ledger breach)"
+            description: |
+              instant_flow_synthetic_reaped_total{outcome="leaked"} > 0. A resource the
+              synthetic runner provisioned could not be deleted via the real delete
+              path — it is leaking on the backing DO/k8s infra. Check the slog ERROR
+              line flow_synthetic_leaked (carries resource_id + run_id) and the
+              synthetic.reaped audit_log row, then manually deprovision the leaked
+              resource. The reaper backstop sweeps orphans older than 30m, so a
+              sustained non-zero means even the backstop is failing. Source:
+              worker/internal/jobs/flow_synthetic.go (reapResource / reapOrphans).
