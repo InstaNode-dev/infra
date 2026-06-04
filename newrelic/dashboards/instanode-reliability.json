@@ -9,628 +9,1257 @@
       "widgets": [
         {
           "title": "/readyz status (api / worker / provisioner)",
-          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.table" },
+          "layout": {
+            "column": 1,
+            "row": 1,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT latest(readyz_check_status) FROM Metric WHERE metricName = 'readyz_check_status' FACET service, check SINCE 5 minutes ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "/readyz failed checks (count, last 1h)",
-          "layout": { "column": 7, "row": 1, "width": 3, "height": 3 },
-          "visualization": { "id": "viz.billboard" },
+          "layout": {
+            "column": 7,
+            "row": 1,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT filter(uniqueCount(check), WHERE readyz_check_status = 0) AS 'failed' FROM Metric WHERE metricName = 'readyz_check_status' SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false },
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
             "thresholds": [
-              { "alertSeverity": "WARNING", "value": 1 },
-              { "alertSeverity": "CRITICAL", "value": 2 }
+              {
+                "alertSeverity": "WARNING",
+                "value": 1
+              },
+              {
+                "alertSeverity": "CRITICAL",
+                "value": 2
+              }
             ]
           }
         },
         {
           "title": "/readyz degraded checks (count, last 1h)",
-          "layout": { "column": 10, "row": 1, "width": 3, "height": 3 },
-          "visualization": { "id": "viz.billboard" },
+          "layout": {
+            "column": 10,
+            "row": 1,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT filter(uniqueCount(check), WHERE readyz_check_status = 0.5) AS 'degraded' FROM Metric WHERE metricName = 'readyz_check_status' SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false },
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
             "thresholds": [
-              { "alertSeverity": "WARNING", "value": 1 }
+              {
+                "alertSeverity": "WARNING",
+                "value": 1
+              }
             ]
           }
         },
         {
           "title": "Propagation queue depth + dead-lettered rate",
-          "layout": { "column": 1, "row": 4, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 1,
+            "row": 4,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_propagation_dead_lettered_total) AS 'dead_lettered', sum(instant_propagation_unknown_kind_total) AS 'unknown_kind', sum(instant_propagation_unexpected_skip_total) AS 'unexpected_skip' FROM Metric WHERE metricName IN ('instant_propagation_dead_lettered_total', 'instant_propagation_unknown_kind_total', 'instant_propagation_unexpected_skip_total') TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Propagation retry distribution by kind",
-          "layout": { "column": 7, "row": 4, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.bar" },
+          "layout": {
+            "column": 7,
+            "row": 4,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.bar"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_propagation_dead_lettered_total) FROM Metric WHERE metricName = 'instant_propagation_dead_lettered_total' FACET reason, kind SINCE 24 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Orphan sweep — reaped by reason (24h)",
-          "layout": { "column": 1, "row": 7, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.stacked-bar" },
+          "layout": {
+            "column": 1,
+            "row": 7,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.stacked-bar"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_orphan_sweep_reaped_total) FROM Metric WHERE metricName = 'instant_orphan_sweep_reaped_total' FACET reason TIMESERIES SINCE 24 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Orphan sweep — reap failures by reason (24h)",
-          "layout": { "column": 7, "row": 7, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 7,
+            "row": 7,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_orphan_sweep_reap_failed_total) FROM Metric WHERE metricName = 'instant_orphan_sweep_reap_failed_total' FACET reason TIMESERIES SINCE 24 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Magic-link rate-limited / hour",
-          "layout": { "column": 1, "row": 10, "width": 4, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 1,
+            "row": 10,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT rate(sum(instant_magic_link_email_rate_limited_total), 1 hour) AS 'rate-limited/h' FROM Metric WHERE metricName = 'instant_magic_link_email_rate_limited_total' TIMESERIES SINCE 24 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Brevo send errors by classification (1h)",
-          "layout": { "column": 5, "row": 10, "width": 4, "height": 3 },
-          "visualization": { "id": "viz.bar" },
+          "layout": {
+            "column": 5,
+            "row": 10,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.bar"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(brevo_send_errors_total) FROM Metric WHERE metricName = 'brevo_send_errors_total' FACET classification, status_code SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Brevo delivery ratio (1h sliding)",
-          "layout": { "column": 9, "row": 10, "width": 4, "height": 3 },
-          "visualization": { "id": "viz.billboard" },
+          "layout": {
+            "column": 9,
+            "row": 10,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT percentage(sum(brevo_webhook_events_total), WHERE event = 'delivered') AS 'delivered %' FROM Metric WHERE metricName = 'brevo_webhook_events_total' AND event IN ('delivered', 'bounced_hard', 'bounced_soft', 'rejected', 'complaint', 'deferred', 'unsubscribed', 'error') SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false },
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
             "thresholds": [
-              { "alertSeverity": "CRITICAL", "value": 95 },
-              { "alertSeverity": "WARNING", "value": 98 }
+              {
+                "alertSeverity": "CRITICAL",
+                "value": 95
+              },
+              {
+                "alertSeverity": "WARNING",
+                "value": 98
+              }
             ]
           }
         },
         {
           "title": "Brevo webhook events funnel (24h)",
-          "layout": { "column": 1, "row": 13, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.bar" },
+          "layout": {
+            "column": 1,
+            "row": 13,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.bar"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(brevo_webhook_events_total) FROM Metric WHERE metricName = 'brevo_webhook_events_total' FACET event SINCE 24 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Email missing-renderer ticks (any > 0 == P0)",
-          "layout": { "column": 7, "row": 13, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.table" },
+          "layout": {
+            "column": 7,
+            "row": 13,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(email_missing_renderer_total) AS 'missing renderer events' FROM Metric WHERE metricName = 'email_missing_renderer_total' FACET kind SINCE 24 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Provisioner circuit-breaker state per backend",
-          "layout": { "column": 1, "row": 16, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 1,
+            "row": 16,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT latest(instant_provisioner_circuit_state) AS 'state (0=CLOSED 1=HALF 2=OPEN)' FROM Metric WHERE metricName = 'instant_provisioner_circuit_state' FACET backend TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Storage presign rate (1h sliding)",
-          "layout": { "column": 7, "row": 16, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 7,
+            "row": 16,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT count(*) AS 'presigns' FROM Log WHERE service = 'api' AND message LIKE '%storage.presign%' AND message NOT LIKE '%storage.presign.lookup_failed%' AND message NOT LIKE '%storage.presign.sign_failed%' TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Billing charge undeliverable (paid, NOT upgraded) — must be 0",
-          "layout": { "column": 1, "row": 19, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.billboard" },
+          "layout": {
+            "column": 1,
+            "row": 19,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_billing_charge_undeliverable_total) AS 'undelivered upgrades (24h)' FROM Metric WHERE metricName = 'instant_billing_charge_undeliverable_total' SINCE 24 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false },
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
             "thresholds": [
-              { "alertSeverity": "CRITICAL", "value": 1 }
+              {
+                "alertSeverity": "CRITICAL",
+                "value": 1
+              }
             ]
           }
         },
         {
           "title": "Tier-upgrade TTL promote outcomes (24h) — error must be 0",
-          "layout": { "column": 1, "row": 25, "width": 12, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 1,
+            "row": 25,
+            "width": 12,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_tier_upgrade_ttl_promote_total) FROM Metric WHERE metricName = 'instant_tier_upgrade_ttl_promote_total' TIMESERIES SINCE 24 hours ago FACET outcome"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Worker /healthz migration_count drift (api vs worker, 1h)",
-          "layout": { "column": 7, "row": 19, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 7,
+            "row": 19,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT count(*) AS 'non-ok migration_status events' FROM Log WHERE service IN ('api', 'worker') AND message LIKE '%migration_status%' AND message NOT LIKE '%migration_status\\\":\\\"ok%' TIMESERIES SINCE 1 hour ago FACET service"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Idempotency replay refunds by route (1h) — FINDING API-1",
-          "layout": { "column": 1, "row": 22, "width": 12, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 1,
+            "row": 22,
+            "width": 12,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT rate(sum(instant_idempotency_replay_refunded_total), 1 minute) AS 'refunds/min' FROM Metric WHERE metricName = 'instant_idempotency_replay_refunded_total' TIMESERIES SINCE 1 hour ago FACET route"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "AUTH-004 synthetic prober — outcomes per leg (1h)",
-          "layout": { "column": 1, "row": 25, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 1,
+            "row": 25,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_auth_probe_outcome_total) FROM Metric WHERE metricName = 'instant_auth_probe_outcome_total' FACET leg, result TIMESERIES SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "AUTH-004 synthetic prober — fails (last 1h, must be 0)",
-          "layout": { "column": 7, "row": 25, "width": 3, "height": 3 },
-          "visualization": { "id": "viz.billboard" },
+          "layout": {
+            "column": 7,
+            "row": 25,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_auth_probe_outcome_total) AS 'fails' FROM Metric WHERE metricName = 'instant_auth_probe_outcome_total' AND result = 'fail' SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false },
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
             "thresholds": [
-              { "alertSeverity": "CRITICAL", "value": 1 }
+              {
+                "alertSeverity": "CRITICAL",
+                "value": 1
+              }
             ]
           }
         },
         {
           "title": "AUTH-004 synthetic prober — P95 latency per leg (1h)",
-          "layout": { "column": 10, "row": 25, "width": 3, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 10,
+            "row": 25,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT percentile(instant_auth_probe_latency_seconds, 95) AS 'p95' FROM Metric WHERE metricName = 'instant_auth_probe_latency_seconds' FACET leg TIMESERIES SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Hourly deploy prober — outcomes per leg (6h)",
-          "layout": { "column": 1, "row": 28, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 1,
+            "row": 28,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_deploy_probe_outcome_total) FROM Metric WHERE metricName = 'instant_deploy_probe_outcome_total' FACET leg, result TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Hourly deploy prober — fails (last 6h, must be 0)",
-          "layout": { "column": 7, "row": 28, "width": 3, "height": 3 },
-          "visualization": { "id": "viz.billboard" },
+          "layout": {
+            "column": 7,
+            "row": 28,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_deploy_probe_outcome_total) AS 'fails' FROM Metric WHERE metricName = 'instant_deploy_probe_outcome_total' AND result = 'fail' SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false },
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
             "thresholds": [
-              { "alertSeverity": "CRITICAL", "value": 1 }
+              {
+                "alertSeverity": "CRITICAL",
+                "value": 1
+              }
             ]
           }
         },
         {
           "title": "Hourly deploy prober — P95 latency per leg (6h)",
-          "layout": { "column": 10, "row": 28, "width": 3, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 10,
+            "row": 28,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT percentile(instant_deploy_probe_latency_seconds, 95) AS 'p95' FROM Metric WHERE metricName = 'instant_deploy_probe_latency_seconds' FACET leg TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "GitHub webhook — received by event+result (6h) [P4 push-to-deploy]",
-          "layout": { "column": 1, "row": 31, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 1,
+            "row": 31,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_github_webhook_received_total) FROM Metric WHERE metricName = 'instant_github_webhook_received_total' FACET event, result TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "GitHub webhook — bad_signature count (1h, must be 0 in steady state)",
-          "layout": { "column": 7, "row": 31, "width": 3, "height": 3 },
-          "visualization": { "id": "viz.billboard" },
+          "layout": {
+            "column": 7,
+            "row": 31,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_github_webhook_received_total) AS 'bad_signature' FROM Metric WHERE metricName = 'instant_github_webhook_received_total' AND result = 'bad_signature' SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false },
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
             "thresholds": [
-              { "alertSeverity": "WARNING", "value": 1 }
+              {
+                "alertSeverity": "WARNING",
+                "value": 1
+              }
             ]
           }
         },
         {
           "title": "GitHub push-to-deploy — enqueued vs errors (6h)",
-          "layout": { "column": 10, "row": 31, "width": 3, "height": 3 },
-          "visualization": { "id": "viz.billboard" },
+          "layout": {
+            "column": 10,
+            "row": 31,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_github_pushdeploy_total) AS 'pushdeploy errors (1h)' FROM Metric WHERE metricName = 'instant_github_pushdeploy_total' AND result = 'error' SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false },
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
             "thresholds": [
-              { "alertSeverity": "CRITICAL", "value": 1 }
+              {
+                "alertSeverity": "CRITICAL",
+                "value": 1
+              }
             ]
           }
         },
         {
           "title": "GitHub push-to-deploy — result breakdown (6h)",
-          "layout": { "column": 1, "row": 34, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.stacked-bar" },
+          "layout": {
+            "column": 1,
+            "row": 34,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.stacked-bar"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_github_pushdeploy_total) FROM Metric WHERE metricName = 'instant_github_pushdeploy_total' FACET result TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "GitHub App token mint — result breakdown (6h)",
-          "layout": { "column": 7, "row": 34, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 7,
+            "row": 34,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_github_app_token_mint_total) FROM Metric WHERE metricName = 'instant_github_app_token_mint_total' FACET result TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Entitlement drift detected vs regraded (6h)",
-          "layout": { "column": 1, "row": 37, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 1,
+            "row": 37,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT rate(sum(instant_entitlement_drift_detected_total), 1 minute) AS 'detected/min', rate(sum(instant_entitlement_regraded_total), 1 minute) AS 'regraded/min' FROM Metric WHERE service = 'worker' TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Entitlement drift backlog (1h, detected - regraded; must be 0)",
-          "layout": { "column": 7, "row": 37, "width": 3, "height": 3 },
-          "visualization": { "id": "viz.billboard" },
+          "layout": {
+            "column": 7,
+            "row": 37,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT derivative(instant_entitlement_drift_detected_total, 1 hour) - derivative(instant_entitlement_regraded_total, 1 hour) AS 'unregraded drift (1h)' FROM Metric WHERE service = 'worker' SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false },
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
             "thresholds": [
-              { "alertSeverity": "CRITICAL", "value": 1 }
+              {
+                "alertSeverity": "CRITICAL",
+                "value": 1
+              }
             ]
           }
         },
         {
           "title": "Deploy build-Job failures (1h, detected; must be 0 in steady state)",
-          "layout": { "column": 10, "row": 37, "width": 3, "height": 3 },
-          "visualization": { "id": "viz.billboard" },
+          "layout": {
+            "column": 10,
+            "row": 37,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT derivative(instant_deploy_job_failed_detected_total, 1 hour) AS 'build-Job failures (1h)' FROM Metric WHERE service = 'worker' SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false },
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
             "thresholds": [
-              { "alertSeverity": "WARNING", "value": 1 }
+              {
+                "alertSeverity": "WARNING",
+                "value": 1
+              }
             ]
           }
         },
         {
           "title": "Deploy build-Job failures by reason (6h)",
-          "layout": { "column": 1, "row": 40, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.stacked-bar" },
+          "layout": {
+            "column": 1,
+            "row": 40,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.stacked-bar"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT rate(sum(instant_deploy_job_failed_detected_total), 1 minute) FROM Metric WHERE service = 'worker' FACET reason TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Billing reconciler gap detected by direction (6h)",
-          "layout": { "column": 7, "row": 40, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 7,
+            "row": 40,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT rate(sum(instant_billing_reconciler_gap_detected_total), 1 minute) FROM Metric WHERE service = 'worker' FACET direction TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Postgres pool saturation ratio by service+pool (3h) — alert > 0.8",
-          "layout": { "column": 1, "row": 43, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 1,
+            "row": 43,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT filter(latest(instant_pg_pool_in_use), WHERE metricName = 'instant_pg_pool_in_use') / filter(latest(instant_pg_pool_max), WHERE metricName = 'instant_pg_pool_max' AND instant_pg_pool_max > 0) AS 'in_use / max' FROM Metric WHERE metricName IN ('instant_pg_pool_in_use', 'instant_pg_pool_max') FACET service, pool TIMESERIES SINCE 3 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Postgres pool peak saturation (1h, in_use/max) — alert > 0.8",
-          "layout": { "column": 7, "row": 43, "width": 3, "height": 3 },
-          "visualization": { "id": "viz.billboard" },
+          "layout": {
+            "column": 7,
+            "row": 43,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT filter(max(instant_pg_pool_in_use), WHERE metricName = 'instant_pg_pool_in_use') / filter(max(instant_pg_pool_max), WHERE metricName = 'instant_pg_pool_max' AND instant_pg_pool_max > 0) AS 'peak in_use/max' FROM Metric WHERE metricName IN ('instant_pg_pool_in_use', 'instant_pg_pool_max') FACET service, pool SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false },
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
             "thresholds": [
-              { "alertSeverity": "CRITICAL", "value": 0.8 }
+              {
+                "alertSeverity": "CRITICAL",
+                "value": 0.8
+              }
             ]
           }
         },
         {
           "title": "Goroutine panics recovered (1h, safego; must be 0)",
-          "layout": { "column": 10, "row": 43, "width": 3, "height": 3 },
-          "visualization": { "id": "viz.billboard" },
+          "layout": {
+            "column": 10,
+            "row": 43,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT derivative(instant_worker_goroutine_panics_recovered_total, 1 hour) AS 'panics recovered (1h)' FROM Metric WHERE service = 'worker' SINCE 1 hour ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false },
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
             "thresholds": [
-              { "alertSeverity": "CRITICAL", "value": 1 }
+              {
+                "alertSeverity": "CRITICAL",
+                "value": 1
+              }
             ]
           }
         },
         {
           "title": "Redis maxmemory regrade failures (6h) — quota not enforced when > 0",
-          "layout": { "column": 1, "row": 46, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 1,
+            "row": 46,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT rate(sum(instant_redis_maxmemory_failed_total), 1 minute) AS 'maxmemory regrade failed/min' FROM Metric WHERE service = 'worker' TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Expiry deprovision failures (6h) — orphan infra accumulating when > 0",
-          "layout": { "column": 7, "row": 46, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 7,
+            "row": 46,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT rate(sum(instant_expire_deprovision_failed_total), 1 minute) AS 'deprovision failed/min' FROM Metric WHERE service = 'worker' TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Goroutine panics recovered by site (6h)",
-          "layout": { "column": 1, "row": 49, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.stacked-bar" },
+          "layout": {
+            "column": 1,
+            "row": 49,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.stacked-bar"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT rate(sum(instant_worker_goroutine_panics_recovered_total), 1 minute) FROM Metric WHERE service = 'worker' FACET site TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Pool reaper — actions by status/outcome (24h)",
-          "layout": { "column": 7, "row": 49, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 7,
+            "row": 49,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT sum(instant_pool_reap_total) FROM Metric WHERE metricName = 'instant_pool_reap_total' FACET resource_type, status, outcome TIMESERIES SINCE 24 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         },
         {
           "title": "Pool items stuck 'assigned' past 30m — leaked shared infra (must be 0)",
-          "layout": { "column": 1, "row": 52, "width": 6, "height": 3 },
-          "visualization": { "id": "viz.line" },
+          "layout": {
+            "column": 1,
+            "row": 52,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
           "rawConfiguration": {
             "nrqlQueries": [
               {
-                "accountIds": [0],
+                "accountIds": [
+                  0
+                ],
                 "query": "SELECT latest(instant_pool_stuck_assigned) AS 'stuck assigned (must be 0)' FROM Metric WHERE metricName = 'instant_pool_stuck_assigned' FACET resource_type TIMESERIES SINCE 6 hours ago"
               }
             ],
-            "platformOptions": { "ignoreTimeRange": false }
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Flow matrix — latest result per flow×actor (synthetic; red=fail)",
+          "layout": {
+            "column": 1,
+            "row": 56,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT latest(result) FROM InstantFlowTest WHERE cohort = 'synthetic' FACET flow, actor SINCE 15 minutes ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Flow matrix — fails by flow (1h, must be 0)",
+          "layout": {
+            "column": 7,
+            "row": 56,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.bar"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT sum(instant_flow_test_total) FROM Metric WHERE metricName = 'instant_flow_test_total' AND result = 'fail' FACET flow SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Flow synthetic — leaked reaps (1h, must be 0)",
+          "layout": {
+            "column": 10,
+            "row": 56,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT sum(instant_flow_synthetic_reaped_total) FROM Metric WHERE metricName = 'instant_flow_synthetic_reaped_total' AND outcome = 'leaked' SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Flow matrix — P95 latency per flow (6h)",
+          "layout": {
+            "column": 1,
+            "row": 59,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT percentile(latencyMs, 95) AS 'p95 ms' FROM InstantFlowTest WHERE cohort = 'synthetic' FACET flow TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Flow matrix — distinct flows reporting (15m; silent-death watch)",
+          "layout": {
+            "column": 7,
+            "row": 59,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT uniqueCount(flow) AS 'flows reporting' FROM InstantFlowTest WHERE cohort = 'synthetic' SINCE 15 minutes ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
           }
         }
       ]

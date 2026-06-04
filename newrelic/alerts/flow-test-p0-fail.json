@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — flow_test P0 fail [a P0 user flow broken in prod]",
+  "type": "NRQL",
+  "description": "P0 page on ANY occurrence of instant_flow_test_total{result=\"fail\"} for a P0 flow. The continuous-monitoring synthetic runner (worker/internal/jobs/flow_synthetic.go) runs the P0 flow matrix against prod every 5 min: flow=\"healthz\" (anon GET /healthz), flow=\"auth_me\" (authenticated GET /auth/me with a minted session JWT), flow=\"provision_reap\" (POST /db/new → DELETE /api/v1/resources/:id round-trip). A fail means one of those user flows is broken in production. FACET by flow so the responder sees which matrix cell went red. Cross-correlate: read the failing InstantFlowTest custom event's commitId attribute and compare to /healthz .commit_id to name the deploy that introduced the red (rule 14/15); the audit_log row (kind=flow_test_failed, actor='system:flow_synthetic') and the slog ERROR line flow_test_failed flow=... reason=... carry the same content. The whole synthetic layer is INERT until the operator sets FLOW_SYNTHETIC_ENABLED=true, so this never fires before enablement. Threshold ABOVE 0 over a 10m window = two consecutive 5-min ticks of fail (unambiguous regression, not flake). Source: worker/internal/jobs/flow_synthetic.go, metric registered in worker/internal/metrics/metrics.go (FlowTestTotal).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_flow_test_total) FROM Metric WHERE metricName = 'instant_flow_test_total' AND result = 'fail' FACET flow"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

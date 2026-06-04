@@ -1,0 +1,30 @@
+{
+  "name": "instant-worker — flow_test latency regression [synthetic flow slow but correct]",
+  "type": "NRQL",
+  "description": "P2 on a synthetic flow whose P95 end-to-end latency crosses 5s over 30m. The synthetic runner records latencyMs on every InstantFlowTest event (and the instant_flow_test_latency_seconds histogram). A flow that still passes but has slowed past its budget is a latency regression in the api / provision path — investigate alongside the api latency dashboards, do not page. The per-flow budgets are 1s (healthz), 2s (auth_me), 10s (provision_reap); 5s is a platform-wide P95 floor that catches a real slowdown while tolerating the provision→reap leg's normal multi-second round-trip. INERT until FLOW_SYNTHETIC_ENABLED=true. Source: worker/internal/jobs/flow_synthetic.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT percentile(latencyMs, 95) FROM InstantFlowTest WHERE cohort = 'synthetic' FACET flow"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 5000,
+      "thresholdDuration": 1800,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

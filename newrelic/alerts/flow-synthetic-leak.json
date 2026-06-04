@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — flow_synthetic leak [cleanup-ledger breach, resource leaking]",
+  "type": "NRQL",
+  "description": "P2 when the synthetic runner's rule-24 cleanup ledger breaches: instant_flow_synthetic_reaped_total{outcome=\"leaked\"} > 0. The runner provisions a real resource per provision_reap tick and MUST delete it via the real delete path; a leaked outcome means the delete failed and a real DO/k8s resource is leaking (a cost + a breach of the 'never leak resources' promise). Must stay 0. Triage: the slog ERROR line flow_synthetic_leaked carries resource_id + run_id; the synthetic.reaped audit_log row records every reap attempt. Manually deprovision the leaked resource. The reaper backstop sweeps orphans older than 30m, so a SUSTAINED non-zero means even the backstop is failing. INERT until FLOW_SYNTHETIC_ENABLED=true. Source: worker/internal/jobs/flow_synthetic.go (reapResource / reapOrphans), metric registered in worker/internal/metrics/metrics.go (FlowSyntheticReapedTotal).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_flow_synthetic_reaped_total) FROM Metric WHERE metricName = 'instant_flow_synthetic_reaped_total' AND outcome = 'leaked'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

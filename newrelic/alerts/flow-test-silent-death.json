@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — flow_test silent death [synthetic runner stopped reporting]",
+  "type": "NRQL",
+  "description": "P1 when the synthetic flow runner stops emitting entirely for 15m while it is supposed to be enabled — a monitoring blind spot where the matrix would show stale-green. A flow that STOPS reporting is itself a failure (the worker's flow_synthetic job stopped ticking: River pool wedged, worker crashloop, or the periodic job de-registered). This NRQL counts the distinct InstantFlowTest events in the window; LOSS of signal (count drops to 0) under a 15m window is the trigger. IMPORTANT: only meaningful once FLOW_SYNTHETIC_ENABLED=true — before enablement no events is expected, so this condition is wired with a loss-of-signal expiration (openViolationOnExpiration) and should be ENABLED only on clusters where the flag is on (operator step). Source: worker/internal/jobs/flow_synthetic.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM InstantFlowTest WHERE cohort = 'synthetic'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "BELOW",
+      "threshold": 1,
+      "thresholdDuration": 900,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 1800,
+    "openViolationOnExpiration": true,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
