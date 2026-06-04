@@ -1,0 +1,30 @@
+{
+  "name": "instant-provisioner — pool_items stuck 'assigned' past 30m (leaked shared infra, operator action; NOT auto-reaped)",
+  "type": "NRQL",
+  "description": "P2 operator-action warning. instant_pool_stuck_assigned{resource_type} > 0 sustained for >1 hour. One or more hot-pool pool_items have sat in the 'assigned' state past the 30m stuck-assigned grace. The provisioner deliberately does NOT auto-reap these: from its own DB an orphaned (crashed-claim) 'assigned' row is indistinguishable from one a live api request successfully bound to a resources row, and deprovisioning a bound item destroys live customer infra (the truehomie-db DROP incident class). A persistently non-zero value means the claim path is leaking 'assigned' rows and needs MANUAL operator attention — it cannot be cleared automatically. Runbook: anti-join pool_items.assigned_at against the platform resources table in a service that owns BOTH tables to classify each stuck row as a true orphan (safe to reap) vs a live binding (leave alone), then reap only the confirmed orphans. Source: provisioner/internal/pool/manager.go (reportStuckAssigned), metric declared in provisioner/internal/pool/metrics.go (poolStuckAssignedGauge).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT latest(instant_pool_stuck_assigned) FROM Metric WHERE metricName = 'instant_pool_stuck_assigned' FACET resource_type"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 60,
+    "fillOption": "LAST_VALUE"
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

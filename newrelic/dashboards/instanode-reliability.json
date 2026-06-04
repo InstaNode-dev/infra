@@ -604,6 +604,34 @@
             ],
             "platformOptions": { "ignoreTimeRange": false }
           }
+        },
+        {
+          "title": "Pool reaper — actions by status/outcome (24h)",
+          "layout": { "column": 7, "row": 49, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT sum(instant_pool_reap_total) FROM Metric WHERE metricName = 'instant_pool_reap_total' FACET resource_type, status, outcome TIMESERIES SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Pool items stuck 'assigned' past 30m — leaked shared infra (must be 0)",
+          "layout": { "column": 1, "row": 52, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT latest(instant_pool_stuck_assigned) AS 'stuck assigned (must be 0)' FROM Metric WHERE metricName = 'instant_pool_stuck_assigned' FACET resource_type TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
         }
       ]
     }
