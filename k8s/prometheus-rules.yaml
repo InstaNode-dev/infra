@@ -521,6 +521,52 @@ spec:
               coverage test that iterates eventEmailBuilders so this can't
               happen again for the same kind.
 
+    # Failover-ESP engagement. The worker's FailoverProvider
+    # (worker/internal/email/failover_provider.go) emits
+    # instant_email_failover_total{outcome} on every send when
+    # EMAIL_PROVIDER_FALLBACK is configured. Two alert-able outcomes:
+    #   fallback_ok — primary ESP (Brevo) failed/rejected but the secondary
+    #                 (SES) sent the email. Email is NOT lost, but the primary
+    #                 is degraded and the failover is carrying load → P1.
+    #   all_failed  — every ESP in the chain refused the send. Email IS being
+    #                 lost → P0. This is the failure mode the feature exists to
+    #                 surface (the standing Brevo-sender-unvalidated P0 with no
+    #                 working secondary).
+    # primary_ok is the healthy path and is deliberately NOT alerted.
+    - name: instant-worker-email-failover
+      rules:
+        - alert: EmailFailoverEngaged
+          expr: |
+            sum(rate(instant_email_failover_total{outcome="fallback_ok"}[10m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: worker
+          annotations:
+            summary: "Email failover engaged — primary ESP degraded, secondary carrying load"
+            description: |
+              instant_email_failover_total{outcome="fallback_ok"} rate > 0 for
+              >10m. The primary ESP (Brevo) is failing or rejecting sends and
+              the configured secondary (SES) is delivering them instead. Email
+              is still flowing, but the primary needs attention — check
+              brevo_send_errors_total by classification and the Brevo sender-
+              domain validation status.
+        - alert: EmailFailoverAllFailed
+          expr: |
+            sum(rate(instant_email_failover_total{outcome="all_failed"}[5m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "Email failover ALL providers failed — email is being LOST"
+            description: |
+              instant_email_failover_total{outcome="all_failed"} rate > 0 for
+              >5m. Every ESP in the failover chain (primary + all secondaries)
+              refused the send — transactional email is being dropped on the
+              floor. Check both BREVO_API_KEY/sender validation and the SES_*
+              credentials + SES sandbox/production-access state immediately.
+
     # /readyz deep-health gauge, exposed by api, worker, and provisioner via
     # readyz_check_status{service,check}. 1=ok, 0.5=degraded, 0=failed. This
     # rule mirrors the NR alert readyz-component-failed.json (which depends

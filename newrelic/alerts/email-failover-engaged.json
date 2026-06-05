@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — email failover engaged (primary ESP degraded, secondary carrying load)",
+  "type": "NRQL",
+  "description": "P1 page. instant_email_failover_total{outcome=\"fallback_ok\"} ticks every time the primary ESP (Brevo) errored or hard-rejected a send and the configured secondary (SES) delivered it instead. Email is NOT being lost, but the primary is degraded and the failover (worker/internal/email/failover_provider.go) is carrying production traffic. This is the leading indicator for the standing P0 (Brevo sender-domain unvalidated → every Brevo send rejected): a sustained fallback_ok rate means Brevo is down for sends and SES is the only thing keeping transactional email flowing. Runbook: check brevo_send_errors_total by classification, confirm Brevo sender-domain validation status in the Brevo dashboard, and verify SES production-access (not sandbox) so the secondary can carry full load. Source: worker/internal/metrics/metrics.go (EmailFailoverTotal), emit site worker/internal/email/failover_provider.go. Inert when EMAIL_PROVIDER_FALLBACK is unset (single-provider default never emits this metric).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_email_failover_total) FROM Metric WHERE metricName = 'instant_email_failover_total' AND outcome = 'fallback_ok'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

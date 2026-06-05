@@ -334,6 +334,31 @@
           }
         },
         {
+          "title": "Email failover outcomes (1h) — fallback_ok=primary degraded (P1), all_failed=email lost (P0)",
+          "layout": {
+            "column": 1,
+            "row": 62,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT sum(instant_email_failover_total) FROM Metric WHERE metricName = 'instant_email_failover_total' FACET outcome TIMESERIES SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
           "title": "Provisioner circuit-breaker state per backend",
           "layout": {
             "column": 1,
