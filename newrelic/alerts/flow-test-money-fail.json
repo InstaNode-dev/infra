@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — flow_test money/value-journey fail (P1)",
+  "type": "NRQL",
+  "description": "P1 (user-visible, recoverable) on ANY instant_flow_test_total{result=\"fail\"} for a MONEY/VALUE-journey flow — flow IN ('claim','deploy_status','checkout','magic_link'). These are the value paths a paying customer's money rides on, each reading a TRUTH SURFACE (CLAUDE.md rule 12): claim = GET /claim/preview enforcing the single-use JWT contract (the anon->claimed funnel step); deploy_status = POST /deploy/new tier-gate (the 402 wall, or 201+reap on a headroom tier); checkout = POST /api/v1/billing/checkout non-5xx reachability (Razorpay live operator-blocked, so contract-only); magic_link = POST /auth/email/start (202) THEN the forwarder_sent ledger classification (rule 12 — a 'rejected' classification, today's Brevo-unvalidated-sender reality, fails the leg, NOT the 202). FACET by flow so the responder sees which money path went red. Distinct from flow-test-p0-fail (the read/provision P0 set) so the money paths get their own P1 (vs P0 for the platform-down read paths). The whole synthetic layer is INERT until the operator sets FLOW_SYNTHETIC_ENABLED=true (see infra/FLOW-SYNTHETIC-RUNBOOK.md), so this never fires before enablement. Cross-correlate: the failing InstantFlowTest event's commitId + the audit_log row (kind=flow_test_failed, actor='system:flow_synthetic') + the slog ERROR line flow_test_failed flow=... reason=... carry the same content. Source: worker/internal/jobs/flow_synthetic_money.go, metric FlowTestTotal in worker/internal/metrics/metrics.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_flow_test_total) FROM Metric WHERE metricName = 'instant_flow_test_total' AND result = 'fail' AND flow IN ('claim', 'deploy_status', 'checkout', 'magic_link') FACET flow"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
