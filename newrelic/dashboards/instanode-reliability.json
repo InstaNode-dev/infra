@@ -1336,6 +1336,31 @@
               "ignoreTimeRange": false
             }
           }
+        },
+        {
+          "title": "Resource-count cap blocks by service+tier (6h; Task #55, inert until RESOURCE_COUNT_CAPS_ENABLED)",
+          "layout": {
+            "column": 1,
+            "row": 66,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.stacked-bar"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT rate(sum(instant_resource_count_limit_blocked_total), 1 minute) FROM Metric WHERE service = 'api' FACET service, team_tier TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
         }
       ]
     }
