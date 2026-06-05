@@ -1,0 +1,31 @@
+{
+  "name": "instanode CI — pr-smoke failing on main (P1)",
+  "type": "NRQL",
+  "description": "P1 (user-visible, recoverable) on ANY InstantCITestRun{suite='pr-smoke', branch='main', result='fail'} — the real-backend UI smoke (instanode-web/.github/workflows/e2e-pr-smoke.yml) mints a cohort account and drives the critical journeys (login round-trip, resources list, one provision, one deploy, billing render) against the real api. A fail ON MAIN means a UI↔API contract just broke post-merge (the 2026-05-29 login-broke class the whole CI integration plan targets) — it ran green on the PR but reds against current main, so the next deploy would ship broken. Scoped to branch='main' (a PR-branch pr-smoke fail is the PR author's to fix and is covered by the ci-failure-rate-spike P2). Triage: the run uploads a Playwright trace; the InstantCITestFailure event carries failed_step + log_url. The suite only emits when its mint token is configured (RUN=1). Source: instanode-web/.github/workflows/e2e-pr-smoke.yml + .github/actions/nr-ci-event.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM InstantCITestRun WHERE suite = 'pr-smoke' AND branch = 'main' AND result = 'fail'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

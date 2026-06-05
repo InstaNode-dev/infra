@@ -1,0 +1,30 @@
+{
+  "name": "instanode CI — failure rate spike (P2)",
+  "type": "NRQL",
+  "description": "P2 (observability) when the CI failure rate across all repos exceeds 40% over 1h — a broken shared dependency (sibling-repo checkout, a flaky service container, an infra outage) or a bad merge reding many PRs at once. Reads the InstantCITestRun{result} events emitted by the .github/actions/nr-ci-event composite action on every gated job (api/worker/instanode-web). FACET by repo so the responder sees which repo's CI is red. Triage: open the 'instanode — CI health' dashboard; the InstantCITestFailure event for the same commit_sha carries failed_step + log_url. This is P2 not P1: a CI red blocks merges but does not break prod (the e2e-prod / pr-smoke alerts cover prod). The emit no-ops without the NR secret, so this never fires before secret provisioning. Source: .github/actions/nr-ci-event/action.yml in each repo.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT percentage(count(*), WHERE result = 'fail') FROM InstantCITestRun FACET repo"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 40,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

@@ -1,0 +1,192 @@
+{
+  "name": "instanode — CI health",
+  "description": "CI / test / deploy health from the InstantCITestRun + InstantCITestFailure custom events emitted by the .github/actions/nr-ci-event composite action across the api / worker / instanode-web repos (Wave 5, docs/ci/01-CI-INTEGRATION-DESIGN.md §NR observability). Every gated job (build-and-test, coverage, integration, playwright, pr-smoke, e2e-prod, deploy) POSTs an InstantCITestRun{repo,workflow,branch,commit_sha,pr_number,result,duration_ms,suite} on completion (if:always) and an InstantCITestFailure{...,failed_step,log_url} on a red run, so a failure is studyable HERE, not just in the GitHub Actions log. The emit no-ops cleanly when NEW_RELIC_LICENSE_KEY / NEW_RELIC_ACCOUNT_ID is unset (fork PRs), so absence of data for a repo means the secret is unprovisioned, not that CI is green. Pairs with the ci-* alerts under newrelic/alerts/.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "CI health",
+      "description": "Pass rate, suite duration, flake rate, and failure breakdown across all repos",
+      "widgets": [
+        {
+          "title": "CI pass rate by repo (7d)",
+          "layout": { "column": 1, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": ["${NEW_RELIC_ACCOUNT_ID}"],
+                "query": "SELECT percentage(count(*), WHERE result = 'pass') AS 'pass %' FROM InstantCITestRun FACET repo SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 90 },
+              { "alertSeverity": "CRITICAL", "value": 75 }
+            ]
+          }
+        },
+        {
+          "title": "Overall CI pass rate (24h)",
+          "layout": { "column": 5, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": ["${NEW_RELIC_ACCOUNT_ID}"],
+                "query": "SELECT percentage(count(*), WHERE result = 'pass') AS 'pass %' FROM InstantCITestRun SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 90 },
+              { "alertSeverity": "CRITICAL", "value": 75 }
+            ]
+          }
+        },
+        {
+          "title": "Total CI failures (24h)",
+          "layout": { "column": 9, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": ["${NEW_RELIC_ACCOUNT_ID}"],
+                "query": "SELECT count(*) AS 'failures' FROM InstantCITestRun WHERE result = 'fail' SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 1 }
+            ]
+          }
+        },
+        {
+          "title": "Pass rate trend by repo (TIMESERIES)",
+          "layout": { "column": 1, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": ["${NEW_RELIC_ACCOUNT_ID}"],
+                "query": "SELECT percentage(count(*), WHERE result = 'pass') AS 'pass %' FROM InstantCITestRun FACET repo TIMESERIES AUTO SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Suite duration trend p50/p95 (ms)",
+          "layout": { "column": 7, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": ["${NEW_RELIC_ACCOUNT_ID}"],
+                "query": "SELECT percentile(duration_ms, 50) AS 'p50 ms', percentile(duration_ms, 95) AS 'p95 ms' FROM InstantCITestRun WHERE duration_ms > 0 FACET suite TIMESERIES AUTO SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Failure count by workflow (7d)",
+          "layout": { "column": 1, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": ["${NEW_RELIC_ACCOUNT_ID}"],
+                "query": "SELECT count(*) FROM InstantCITestRun WHERE result = 'fail' FACET workflow SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Failure count by suite (7d)",
+          "layout": { "column": 5, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": ["${NEW_RELIC_ACCOUNT_ID}"],
+                "query": "SELECT count(*) FROM InstantCITestRun WHERE result = 'fail' FACET suite SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Flake signal — commits with a fail AND a pass on the same suite (7d)",
+          "layout": { "column": 9, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": ["${NEW_RELIC_ACCOUNT_ID}"],
+                "query": "SELECT filter(count(*), WHERE result = 'pass') AS 'pass runs', filter(count(*), WHERE result = 'fail') AS 'fail runs' FROM InstantCITestRun FACET repo, suite, commit_sha LIMIT 50 SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Live-prod e2e + pr-smoke results (TIMESERIES) — user-facing journeys",
+          "layout": { "column": 1, "row": 10, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": ["${NEW_RELIC_ACCOUNT_ID}"],
+                "query": "SELECT filter(count(*), WHERE result = 'pass') AS 'pass', filter(count(*), WHERE result = 'fail') AS 'fail' FROM InstantCITestRun WHERE suite IN ('e2e-prod', 'pr-smoke') FACET suite TIMESERIES AUTO SINCE 3 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Recent CI failures (failed_step + log_url for triage)",
+          "layout": { "column": 7, "row": 10, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": ["${NEW_RELIC_ACCOUNT_ID}"],
+                "query": "SELECT repo, workflow, suite, branch, commit_sha, pr_number, failed_step, log_url FROM InstantCITestFailure SINCE 7 days ago LIMIT 100"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Deploy-gate results by repo (TIMESERIES)",
+          "layout": { "column": 1, "row": 13, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": ["${NEW_RELIC_ACCOUNT_ID}"],
+                "query": "SELECT filter(count(*), WHERE result = 'pass') AS 'pass', filter(count(*), WHERE result = 'fail') AS 'fail' FROM InstantCITestRun WHERE suite = 'deploy' FACET repo TIMESERIES AUTO SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "CI run volume by repo (7d) — confirms emit is wired (no data = secret unprovisioned)",
+          "layout": { "column": 7, "row": 13, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": ["${NEW_RELIC_ACCOUNT_ID}"],
+                "query": "SELECT count(*) FROM InstantCITestRun FACET repo SINCE 7 days ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        }
+      ]
+    }
+  ]
+}

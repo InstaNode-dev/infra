@@ -1,0 +1,31 @@
+{
+  "name": "instanode CI — e2e-prod suite failing (P1)",
+  "type": "NRQL",
+  "description": "P1 (user-visible, recoverable) on ANY InstantCITestRun{suite='e2e-prod', result='fail'} — the live-prod Playwright suite (instanode-web/.github/workflows/e2e-prod.yml) drives full user journeys against PROD on a 30m schedule + post-deploy, so a fail means a user-facing journey is broken IN PRODUCTION right now (the same class the pr-smoke gate would catch pre-merge, but e2e-prod is the continuous prod signal). FACET nothing — any fail pages. Triage: the e2e-prod GitHub run uploads a Playwright trace/screenshot/video artifact; the InstantCITestFailure event for the same commit_sha carries failed_step + log_url; cross-correlate against /healthz .commit_id (rule 14) to name the deploy. The suite only emits when its mint token is configured (RUN=1), so absence of data means it is not yet enabled, not green. Source: instanode-web/.github/workflows/e2e-prod.yml + .github/actions/nr-ci-event.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM InstantCITestRun WHERE suite = 'e2e-prod' AND result = 'fail'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
