@@ -917,6 +917,48 @@ spec:
               build pod logs in instant-deploy-* namespaces. Source:
               worker/internal/jobs/deploy_status_reconcile.go.
 
+    # instant-worker — scale-to-zero idle-scaler (Task #54).
+    # instant_deploy_scaled_to_zero_total{outcome} is emitted by
+    # worker/internal/jobs/deploy_idle_scaler.go. INERT until an operator sets
+    # DEPLOY_SCALE_TO_ZERO_ENABLED (default off), so these rules sit quiet until
+    # the feature is canaried on. wake_failed = a user's app may be stuck asleep
+    # (P1, user-visible recoverable); scale_failed = a scale-DOWN k8s patch / DB
+    # flip failed (P2, the row is left untouched + retried next tick).
+    - name: instant-worker-deploy-scale-to-zero
+      rules:
+        - alert: DeployScaleToZeroWakeFailed
+          expr: |
+            sum(increase(instant_deploy_scaled_to_zero_total{outcome="wake_failed"}[15m])) > 0
+          for: 10m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "scale-to-zero wake failures > 0 (15m) — an app may be stuck asleep"
+            description: |
+              instant_deploy_scaled_to_zero_total{outcome="wake_failed"} increased over the
+              last 15m, sustained 10m. A scaled-to-zero app failed to wake (k8s scale-up
+              error), so a customer request to a sleeping app is returning the ingress
+              upstream-down response with no recovery. Check instant-worker logs for
+              `jobs.deploy_idle_scaler` and the api `deploy.wake.scale_failed` lines, and
+              the health of the instant-deploy-* namespaces. Source:
+              worker/internal/jobs/deploy_idle_scaler.go + api deploy_wake.go.
+        - alert: DeployScaleToZeroScaleDownFailures
+          expr: |
+            sum(increase(instant_deploy_scaled_to_zero_total{outcome="scale_failed"}[30m])) >= 5
+          for: 30m
+          labels:
+            severity: warning
+            service: worker
+          annotations:
+            summary: "scale-to-zero scale-DOWN failures >= 5 in 30m"
+            description: |
+              instant_deploy_scaled_to_zero_total{outcome="scale_failed"} reached >= 5 in
+              30m. The idle-scaler is repeatedly failing to deschedule idle apps (k8s patch
+              or DB flip error). Apps stay running (no customer impact) but the compute
+              savings are not landing. Check instant-worker RBAC for deployments/patch and
+              the k8s API health. Source: worker/internal/jobs/deploy_idle_scaler.go.
+
     # instant-worker — billing reconciler gap detected (Rule 25 sweep 2026-06-04).
     # instant_billing_reconciler_gap_detected_total is the PRIMARY signal for a
     # dropped Razorpay webhook: each gap = a team whose teams.plan_tier disagrees

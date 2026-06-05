@@ -1,5 +1,5 @@
 {
-  "name": "instanode — reliability",
+  "name": "instanode \u2014 reliability",
   "description": "Single-pane reliability view rolling up every new metric shipped in the 2026-05-20 observability sweep: /readyz across all 3 services, propagation_runner queue health, orphan_sweep activity, magic-link rate-limiting, Brevo send/error/webhook funnel, provisioner circuit-breaker state, missing-renderer events, and storage presign throughput. Source: same Metric + Log feeds as the per-surface dashboards. Apply via newrelic/apply.sh.",
   "permissions": "PUBLIC_READ_WRITE",
   "pages": [
@@ -149,7 +149,7 @@
           }
         },
         {
-          "title": "Orphan sweep — reaped by reason (24h)",
+          "title": "Orphan sweep \u2014 reaped by reason (24h)",
           "layout": {
             "column": 1,
             "row": 7,
@@ -174,7 +174,7 @@
           }
         },
         {
-          "title": "Orphan sweep — reap failures by reason (24h)",
+          "title": "Orphan sweep \u2014 reap failures by reason (24h)",
           "layout": {
             "column": 7,
             "row": 7,
@@ -334,7 +334,7 @@
           }
         },
         {
-          "title": "Email failover outcomes (1h) — fallback_ok=primary degraded (P1), all_failed=email lost (P0)",
+          "title": "Email failover outcomes (1h) \u2014 fallback_ok=primary degraded (P1), all_failed=email lost (P0)",
           "layout": {
             "column": 1,
             "row": 62,
@@ -409,7 +409,7 @@
           }
         },
         {
-          "title": "Billing charge undeliverable (paid, NOT upgraded) — must be 0",
+          "title": "Billing charge undeliverable (paid, NOT upgraded) \u2014 must be 0",
           "layout": {
             "column": 1,
             "row": 19,
@@ -440,7 +440,7 @@
           }
         },
         {
-          "title": "Tier-upgrade TTL promote outcomes (24h) — error must be 0",
+          "title": "Tier-upgrade TTL promote outcomes (24h) \u2014 error must be 0",
           "layout": {
             "column": 1,
             "row": 25,
@@ -490,7 +490,7 @@
           }
         },
         {
-          "title": "Idempotency replay refunds by route (1h) — FINDING API-1",
+          "title": "Idempotency replay refunds by route (1h) \u2014 FINDING API-1",
           "layout": {
             "column": 1,
             "row": 22,
@@ -515,7 +515,7 @@
           }
         },
         {
-          "title": "AUTH-004 synthetic prober — outcomes per leg (1h)",
+          "title": "AUTH-004 synthetic prober \u2014 outcomes per leg (1h)",
           "layout": {
             "column": 1,
             "row": 25,
@@ -540,7 +540,7 @@
           }
         },
         {
-          "title": "AUTH-004 synthetic prober — fails (last 1h, must be 0)",
+          "title": "AUTH-004 synthetic prober \u2014 fails (last 1h, must be 0)",
           "layout": {
             "column": 7,
             "row": 25,
@@ -571,7 +571,7 @@
           }
         },
         {
-          "title": "AUTH-004 synthetic prober — P95 latency per leg (1h)",
+          "title": "AUTH-004 synthetic prober \u2014 P95 latency per leg (1h)",
           "layout": {
             "column": 10,
             "row": 25,
@@ -596,7 +596,7 @@
           }
         },
         {
-          "title": "Hourly deploy prober — outcomes per leg (6h)",
+          "title": "Hourly deploy prober \u2014 outcomes per leg (6h)",
           "layout": {
             "column": 1,
             "row": 28,
@@ -621,7 +621,7 @@
           }
         },
         {
-          "title": "Hourly deploy prober — fails (last 6h, must be 0)",
+          "title": "Hourly deploy prober \u2014 fails (last 6h, must be 0)",
           "layout": {
             "column": 7,
             "row": 28,
@@ -652,7 +652,7 @@
           }
         },
         {
-          "title": "Hourly deploy prober — P95 latency per leg (6h)",
+          "title": "Hourly deploy prober \u2014 P95 latency per leg (6h)",
           "layout": {
             "column": 10,
             "row": 28,
@@ -677,7 +677,7 @@
           }
         },
         {
-          "title": "GitHub webhook — received by event+result (6h) [P4 push-to-deploy]",
+          "title": "GitHub webhook \u2014 received by event+result (6h) [P4 push-to-deploy]",
           "layout": {
             "column": 1,
             "row": 31,
@@ -702,7 +702,7 @@
           }
         },
         {
-          "title": "GitHub webhook — bad_signature count (1h, must be 0 in steady state)",
+          "title": "GitHub webhook \u2014 bad_signature count (1h, must be 0 in steady state)",
           "layout": {
             "column": 7,
             "row": 31,
@@ -733,7 +733,7 @@
           }
         },
         {
-          "title": "GitHub push-to-deploy — enqueued vs errors (6h)",
+          "title": "GitHub push-to-deploy \u2014 enqueued vs errors (6h)",
           "layout": {
             "column": 10,
             "row": 31,
@@ -764,7 +764,7 @@
           }
         },
         {
-          "title": "GitHub push-to-deploy — result breakdown (6h)",
+          "title": "GitHub push-to-deploy \u2014 result breakdown (6h)",
           "layout": {
             "column": 1,
             "row": 34,
@@ -789,7 +789,7 @@
           }
         },
         {
-          "title": "GitHub App token mint — result breakdown (6h)",
+          "title": "GitHub App token mint \u2014 result breakdown (6h)",
           "layout": {
             "column": 7,
             "row": 34,
@@ -951,7 +951,7 @@
           }
         },
         {
-          "title": "Postgres pool saturation ratio by service+pool (3h) — alert > 0.8",
+          "title": "Postgres pool saturation ratio by service+pool (3h) \u2014 alert > 0.8",
           "layout": {
             "column": 1,
             "row": 43,
@@ -976,7 +976,7 @@
           }
         },
         {
-          "title": "Postgres pool peak saturation (1h, in_use/max) — alert > 0.8",
+          "title": "Postgres pool peak saturation (1h, in_use/max) \u2014 alert > 0.8",
           "layout": {
             "column": 7,
             "row": 43,
@@ -1038,7 +1038,7 @@
           }
         },
         {
-          "title": "Redis maxmemory regrade failures (6h) — quota not enforced when > 0",
+          "title": "Redis maxmemory regrade failures (6h) \u2014 quota not enforced when > 0",
           "layout": {
             "column": 1,
             "row": 46,
@@ -1063,7 +1063,7 @@
           }
         },
         {
-          "title": "Expiry deprovision failures (6h) — orphan infra accumulating when > 0",
+          "title": "Expiry deprovision failures (6h) \u2014 orphan infra accumulating when > 0",
           "layout": {
             "column": 7,
             "row": 46,
@@ -1113,7 +1113,7 @@
           }
         },
         {
-          "title": "Pool reaper — actions by status/outcome (24h)",
+          "title": "Pool reaper \u2014 actions by status/outcome (24h)",
           "layout": {
             "column": 7,
             "row": 49,
@@ -1138,7 +1138,7 @@
           }
         },
         {
-          "title": "Pool items stuck 'assigned' past 30m — leaked shared infra (must be 0)",
+          "title": "Pool items stuck 'assigned' past 30m \u2014 leaked shared infra (must be 0)",
           "layout": {
             "column": 1,
             "row": 52,
@@ -1163,7 +1163,7 @@
           }
         },
         {
-          "title": "Flow matrix — latest result per flow×actor (synthetic; red=fail)",
+          "title": "Flow matrix \u2014 latest result per flow\u00d7actor (synthetic; red=fail)",
           "layout": {
             "column": 1,
             "row": 56,
@@ -1188,7 +1188,7 @@
           }
         },
         {
-          "title": "Flow matrix — fails by flow (1h, must be 0)",
+          "title": "Flow matrix \u2014 fails by flow (1h, must be 0)",
           "layout": {
             "column": 7,
             "row": 56,
@@ -1213,7 +1213,7 @@
           }
         },
         {
-          "title": "Flow synthetic — leaked reaps (1h, must be 0)",
+          "title": "Flow synthetic \u2014 leaked reaps (1h, must be 0)",
           "layout": {
             "column": 10,
             "row": 56,
@@ -1238,7 +1238,7 @@
           }
         },
         {
-          "title": "Flow matrix — P95 latency per flow (6h)",
+          "title": "Flow matrix \u2014 P95 latency per flow (6h)",
           "layout": {
             "column": 1,
             "row": 59,
@@ -1263,7 +1263,7 @@
           }
         },
         {
-          "title": "Flow matrix — distinct flows reporting (15m; silent-death watch)",
+          "title": "Flow matrix \u2014 distinct flows reporting (15m; silent-death watch)",
           "layout": {
             "column": 7,
             "row": 59,
@@ -1280,6 +1280,56 @@
                   0
                 ],
                 "query": "SELECT uniqueCount(flow) AS 'flows reporting' FROM InstantFlowTest WHERE cohort = 'synthetic' SINCE 15 minutes ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Scale-to-zero \u2014 apps currently asleep (replicas=0)",
+          "layout": {
+            "column": 1,
+            "row": 62,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT latest(instant_deploy_idle_apps) AS 'apps asleep' FROM Metric WHERE service = 'worker' SINCE 10 minutes ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Scale-to-zero actions by outcome (6h; wake_failed/scale_failed must be 0)",
+          "layout": {
+            "column": 4,
+            "row": 62,
+            "width": 9,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.stacked-bar"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT rate(sum(instant_deploy_scaled_to_zero_total), 1 minute) FROM Metric WHERE service = 'worker' FACET outcome TIMESERIES SINCE 6 hours ago"
               }
             ],
             "platformOptions": {
