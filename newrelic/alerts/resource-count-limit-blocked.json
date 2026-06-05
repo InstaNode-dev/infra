@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — resource-count cap blocks (1h) [Task #55]",
+  "type": "NRQL",
+  "description": "P2 (abuse/observability). Fires when the per-service resource-COUNT cap rejects provisions. instant_resource_count_limit_blocked_total{service,team_tier} is emitted by api/internal/handlers/resource_count_cap.go when a team at its per-tier count cap (postgres/vector/redis/mongodb/storage) attempts another provision and gets 402. The cap closes the strict-≥80%-margin hole where only queue_count was capped — a tenant could otherwise create MANY resources each at the per-resource size cap and blow the saturated-COGS bound (Redis the binding constraint at $6.50/GB). The whole feature is INERT until an operator sets RESOURCE_COUNT_CAPS_ENABLED (default off), so this alert sits quiet until enforcement is enabled. A non-trivial, sustained rate after enable means either (a) a tenant is hammering against a cap (upsell/abuse signal — point sales/support at the team) or (b) the cap is set too low for legitimate use (revisit plans.yaml). P2 because it is not data-loss and not a user-blocking outage — the 402 is the intended, recoverable behaviour with an agent_action telling the user to upgrade. Query is derivative(...,1 hour) per service+tier (NR ingests the counter as a cumulative monotonic OTLP sum). Source: api/internal/handlers/resource_count_cap.go; counter ResourceCountLimitBlocked in api/internal/metrics/metrics.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT derivative(instant_resource_count_limit_blocked_total, 1 hour) FROM Metric WHERE service = 'api' FACET service, team_tier"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 20,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 180,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

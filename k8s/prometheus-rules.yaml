@@ -46,6 +46,24 @@ spec:
           annotations:
             summary: "P99 provision latency > 5s (instant_http_request_duration_seconds)"
 
+        - alert: ResourceCountCapBlocked
+          # Task #55: per-service resource-COUNT cap rejections. INERT until an
+          # operator sets RESOURCE_COUNT_CAPS_ENABLED (default off), so this rule
+          # stays quiet until enforcement is enabled. P2 (abuse/observability):
+          # a sustained block rate after enable is either a tenant hammering a
+          # cap (upsell/abuse signal) or a too-low cap (revisit plans.yaml).
+          # Lazy CounterVec — the {service,team_tier} series only appears after
+          # the first block.
+          expr: |
+            sum by (service, team_tier) (
+              rate(instant_resource_count_limit_blocked_total[1h])
+            ) * 3600 > 20
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Resource-count cap blocking > 20 provisions/h for a tier+service (instant_resource_count_limit_blocked_total)"
+
         - alert: APIDown
           expr: up{job="instant-api"} == 0
           for: 1m
