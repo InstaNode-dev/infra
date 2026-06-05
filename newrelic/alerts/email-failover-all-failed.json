@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — email failover ALL providers failed (email is being LOST)",
+  "type": "NRQL",
+  "description": "P0 page. instant_email_failover_total{outcome=\"all_failed\"} ticks when EVERY ESP in the failover chain (primary Brevo + all configured secondaries like SES) refused a send — transactional email is being dropped on the floor. This is the failure mode the failover feature exists to make loud: the standing Brevo-sender-unvalidated P0 with no working secondary. ANY tick means at least one customer-facing email (magic-link, claim, billing, expiry warning) silently failed across all providers. Runbook: check BOTH BREVO_API_KEY / Brevo sender-domain validation AND the SES_* credentials + SES sandbox/production-access state immediately; the forwarder holds its cursor on the last error class so backlog recovers once one provider is healthy. Source: worker/internal/metrics/metrics.go (EmailFailoverTotal), emit site worker/internal/email/failover_provider.go. Inert when EMAIL_PROVIDER_FALLBACK is unset.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_email_failover_total) FROM Metric WHERE metricName = 'instant_email_failover_total' AND outcome = 'all_failed'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
