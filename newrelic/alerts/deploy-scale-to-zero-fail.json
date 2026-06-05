@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — scale-to-zero wake failures (15m) [Task #54]",
+  "type": "NRQL",
+  "description": "Fires when the scale-to-zero idle-scaler reports wake failures. instant_deploy_scaled_to_zero_total{outcome=\"wake_failed\"} is emitted by worker/internal/jobs/deploy_idle_scaler.go (and the api wake endpoint records its own failures). A wake_failed event means a scaled-to-zero app could not be brought back to replicas=1 — a customer request to a sleeping app is returning the ingress upstream-down response with no recovery, so this is P1 (user-visible, recoverable). The whole feature is INERT until an operator sets DEPLOY_SCALE_TO_ZERO_ENABLED (default off), so this alert sits quiet until scale-to-zero is canaried on. The query is derivative(...,15 minutes) per outcome (NR ingests the counter as a cumulative monotonic OTLP sum); ABOVE 0 over a 15m window pages on any wake failure. A separate scale_failed outcome (scale-DOWN failures, no customer impact) is a P2 surfaced on the dashboard tile only. Source: worker/internal/jobs/deploy_idle_scaler.go; counter DeployScaledToZeroTotal in worker/internal/metrics/metrics.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT derivative(instant_deploy_scaled_to_zero_total, 15 minutes) FROM Metric WHERE service = 'worker' AND outcome = 'wake_failed' FACET outcome"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 180,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
