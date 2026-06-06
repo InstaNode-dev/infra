@@ -1,0 +1,31 @@
+{
+  "name": "instant-pg-proxy — emitted zero logs in 10m (proxy down; customer-DB public path)",
+  "type": "NRQL",
+  "description": "P1. The instant-pg-proxy pods emitted ZERO log records for 10 minutes — a liveness check for the Postgres-aware TCP proxy that fronts postgres-customers on the public pg.instanode.dev:5432 path. The proxy logs continuously under normal operation (each pod logs `pgproxy.role_gate` + `pgproxy.starting` on boot; every public privileged-role attempt logs `pgproxy.user_denied_public`; connections log at debug), so a 10-minute silence on the whole Deployment = crashed/evicted/scaled-to-zero proxy. Customer connections to pg.instanode.dev then fail (fail-safe), and an operator must not 'fix' it by re-pointing ingress-nginx tcp-services 5432 straight at postgres-customers — that would bypass the role-gate and REOPEN the 2026-06-03 admin DROP vector. Restore the proxy from source of truth instead: `kubectl apply -f k8s/` (repo InstaNode-dev/instant-pg-proxy).\n\nComplements pg-proxy-role-gate-disabled.json (which catches the gate being DISABLED while the proxy is up). Together they bound the boundary: gate-off (exposure) and proxy-off (path broken). The proxy has no /metrics endpoint, so this is a log-liveness check, not a metric scrape. fillValue STATIC 0 ensures a fully silent stream is treated as zero, not no-data.\n\nSource: stdout of instant-pg-proxy pods (k8s_namespace_name='instant', k8s_label_app='instant-pg-proxy'), via the newrelic-logging Fluent Bit DaemonSet. Runbook: infra/POSTGRES-CUSTOMERS-LOCKDOWN-RUNBOOK.md §3a + §9.\n\nWhen this fires:\n  1. `kubectl get pods -n instant -l app=instant-pg-proxy -o wide` — are the pods Running?\n  2. `kubectl describe pod -n instant -l app=instant-pg-proxy` + `kubectl logs --previous` — crash cause (OOM, image pull, Redis URL).\n  3. `kubectl rollout status deploy/instant-pg-proxy -n instant`.\n  4. If the Deployment is gone, re-create from source of truth: `kubectl apply -f k8s/` (InstaNode-dev/instant-pg-proxy) — this restores the role-gate env too.\n  5. Confirm `ingress-nginx/ingress-nginx-tcp` 5432 still maps to instant/instant-pg-proxy:5432 (NOT instant-data/postgres-customers).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE k8s_namespace_name = 'instant' AND k8s_label_app = 'instant-pg-proxy'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "BELOW_OR_EQUALS",
+      "threshold": 0,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 1200,
+    "openViolationOnExpiration": true,
+    "closeViolationsOnExpiration": false
+  },
+  "violationTimeLimitSeconds": 86400
+}

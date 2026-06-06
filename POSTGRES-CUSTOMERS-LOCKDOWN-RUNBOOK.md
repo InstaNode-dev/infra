@@ -162,10 +162,35 @@ Live-verified: after the rollout the proxy runs on NEW IPs (`10.109.6.132`,
 still rejected (at the proxy, not pg_hba). The pg_hba proxy-IP reject lines are
 therefore now **redundant belt-and-suspenders** — left in place (harmless), no
 longer the sole boundary, no longer require churn-refresh on reschedule.
-**Remaining operator follow-up:** add an alert on `instant-pg-proxy` pod restarts
-(defense-in-depth visibility), and ensure any future redeploy preserves the
-`PG_PROXY_DENIED_ROLES` env (it lives only on the live Deployment patch — fold it
-into a committed manifest when one is created for the proxy).
+**✅ RESIDUAL CLOSED (2026-06-06).** Both halves of the remaining follow-up are done:
+1. **Manifest committed (durable).** `PG_PROXY_DENIED_ROLES` no longer lives only on
+   a live `kubectl patch`. The proxy Deployment + Service are now committed to
+   `InstaNode-dev/instant-pg-proxy` under `k8s/` (`deployment.yaml`, `service.yaml`,
+   `README.md`) as the source of truth. The manifest was captured faithfully from the
+   live spec and is a **verified no-op** — `kubectl diff -f k8s/deployment.yaml -n instant`
+   returned empty (exit 0), confirming it matches the running proxy (image `v0.2.0` +
+   the role-gate env) and re-applying it changes nothing. A future `kubectl delete` +
+   `kubectl apply -f k8s/` therefore restores the gate instead of silently dropping it.
+   Re-apply is safe at any time; no apply is needed today (already matches live).
+2. **Alert shipped (operator-apply).** Two log-based NR alerts watch the gate:
+   - `infra/newrelic/alerts/pg-proxy-role-gate-disabled.json` (P0/CRITICAL) — fires when
+     a proxy pod logs `pgproxy.role_gate` with `"denied_role_count":0` (gate disabled,
+     e.g. a re-create that dropped the env).
+   - `infra/newrelic/alerts/pg-proxy-down.json` (P1/CRITICAL) — fires when the proxy
+     emits zero logs for 10m (proxy down / public path broken).
+   Both query the proxy's stdout JSON in NR (`k8s_namespace_name='instant' AND
+   k8s_label_app='instant-pg-proxy'`), shipped via the `newrelic-logging` Fluent Bit
+   DaemonSet (verified running, all nodes). Dashboard: `admin-defense.json` →
+   "pg-proxy public-path gate" page (4 tiles). Catalog row in
+   `infra/observability/METRICS-CATALOG.md`.
+   **Why log-based (interim):** the proxy is a thin TCP proxy with slog-to-stdout only —
+   it exposes **no `/metrics` endpoint**, so a Prometheus-metric rule is not possible
+   today. The log signal (`pgproxy.role_gate denied_role_count`) is the lowest-effort
+   reliable alarm and needs zero code change. **Proper durable upgrade (follow-up):**
+   add a `pgproxy_role_gate_denied_roles` gauge + an HTTP `/metrics` listener to the
+   proxy, scrape it, alert on `gauge == 0`, AND add a worker synthetic-reject prober leg
+   (open a raw StartupMessage to `pg.instanode.dev` as `instanode_admin`, assert FATAL
+   `28000`). Until then the log alerts are the alarm.
 
 - If the proxy-pod-IP reject lines in the ConfigMap do NOT match the live proxy
   IPs at apply time → FIX them first, else the lockdown is a no-op for the live
@@ -326,6 +351,7 @@ the chokepoint ensures every *sanctioned* drop is recorded; the CI guard ensures
 |---|---|---|---|
 | 2026-06-06 | Claude (operator-authorized apply, "no customers, low blast radius") | **APPLIED to do-nyc3-instant-prod.** Merged PR #61 (squash, merge commit `78cb6677`) after fixing the manifest for two live findings (see below). Applied ConfigMap `postgres-customers-hba`; patched `deploy/postgres-customers` to mount it + `-c hba_file=/etc/postgresql/pg_hba.conf -c password_encryption=scram-sha-256`; changed strategy `RollingUpdate→Recreate` (RWO PVC Multi-Attach). Did NOT apply `networkpolicy.yaml` (verified NOT enforced in prod; applying as-is would default-deny the proxy path). | **SUCCESS.** External admin REJECTED at pg_hba (both `instanode_admin` + `instant_cust`, error names the SNAT'd proxy pod IP) — baseline beforehand reached scram (vector was OPEN). In-cluster admin preserved: provisioner `instant_cust` CREATE/DROP smoke OK, api/worker `instanode_admin` connect + `pg_database_size` OK, customer `usr_*` path still reaches scram. No rollback. |
 | 2026-06-06 | Claude (operator-authorized, "no customers, low blast radius") | **DURABLE FIX SHIPPED + DEPLOYED — the churn-proof pg-proxy role-gate.** Created the `InstaNode-dev/instant-pg-proxy` repo (did not exist before — the proxy source was a loose, un-versioned local dir; live image was `ghcr.io/mastermanas805/instant-pg-proxy:v0.1.0` applied by hand, no committed manifest). Merged PR #1 (squash, merge commit `5a86c93`): the proxy parses the StartupMessage `user` and, if in `PG_PROXY_DENIED_ROLES`, returns a FATAL `28000` ErrorResponse (`role is not permitted over the public endpoint`) BEFORE resolving/dialing — default empty = inert. Built+pushed `ghcr.io/mastermanas805/instant-pg-proxy:v0.2.0`; `kubectl patch deploy/instant-pg-proxy -n instant` → image v0.2.0 + `PG_PROXY_DENIED_ROLES=instanode_admin,instant_cust,postgres,doadmin`. | **SUCCESS — durable closure verified, pod-IP-independent.** Rollout landed new pods at `10.109.6.132`/`10.109.4.98` (NOT the `10.109.4.113`/`10.109.0.101` the pg_hba reject lines name — those lines now point at DEAD pods, yet admin is STILL rejected, proving independence). External `instanode_admin`/`instant_cust`/`postgres` over `pg.instanode.dev` → **proxy 28000** (`role is not permitted over the public endpoint`), NOT a pg_hba reject naming a pod IP. Proxy logged `user_denied_public` for all three. Customer `usr_*` → FORWARDED (reached postgres scram → `password authentication failed`, not 28000). In-cluster admin via ClusterIP svc UNAFFECTED: `instant_cust` CREATE+DROP OK (`INCLUSTER_PROVISION_PATH_OK`), `pg_database_size` quota read OK. Provisioner DSN confirmed → `postgres-customers.instant-data.svc.cluster.local:5432` (svc, NOT the public proxy). The pg_hba proxy-IP reject lines are now redundant belt-and-suspenders (left in place, harmless). |
+| 2026-06-06 | Claude (operator-authorized, "no customers, low blast radius") | **RESIDUAL CLOSED — role-gate persisted to a committed manifest + alerted.** The `PG_PROXY_DENIED_ROLES` env previously lived ONLY on the live `kubectl patch` (a manual Deployment re-create would have silently dropped it → reopened the admin vector). (1) Captured the LIVE spec faithfully (`kubectl get deploy/svc instant-pg-proxy -n instant -o yaml`), stripped live-only noise, committed `k8s/deployment.yaml` + `k8s/service.yaml` + `k8s/README.md` to `InstaNode-dev/instant-pg-proxy` (default branch master) as the source of truth (PR, squash auto-merge). (2) Added two log-based NR alerts (operator-apply) — `pg-proxy-role-gate-disabled.json` (P0; fires on `pgproxy.role_gate denied_role_count==0`) + `pg-proxy-down.json` (P1; fires on 10m proxy log silence) — plus an admin-defense dashboard page + METRICS-CATALOG row (infra PR, squash auto-merge). The proxy exposes no `/metrics`, so the log signal is the lowest-effort reliable alarm; a `pgproxy_role_gate_denied_roles` gauge + synthetic-reject prober leg are the documented durable upgrade. | **SUCCESS — manifest is a verified no-op vs live; live behavior unchanged.** `kubectl diff -f k8s/deployment.yaml -n instant` → empty output, exit 0 (tooling sanity-checked: a deliberate `replicas: 2→3` edit DID surface drift, so the empty diff is genuine). `kubectl diff -f k8s/service.yaml` → also empty/exit 0. Live state at capture: image `v0.2.0`, `PG_PROXY_DENIED_ROLES=instanode_admin,instant_cust,postgres,doadmin`, pods Running 2/2, `pgproxy.role_gate denied_role_count:4` in logs, and live `pgproxy.user_denied_public` events observed for `instanode_admin`/`instant_cust`/`postgres` (gate actively rejecting). `newrelic-logging` Fluent Bit DaemonSet confirmed running on all nodes (proxy stdout reaches NR `Log`). NO `kubectl apply` performed (not needed — manifest already matches live); operator may apply anytime safely. The infra alerts are operator-apply. |
 
 **Manifest fixes made before apply (live pre-apply verification):**
 1. **`instanode_admin` was missing.** Prod has TWO superusers — `instanode_admin` (api/worker `CUSTOMER_DATABASE_URL`, the CONFIRMED truehomie vector) and `instant_cust` (provisioner `POSTGRES_CUSTOMERS_URL`). The original PR rejected only `instant_cust`; `instanode_admin` would have matched the catch-all customer allow → vector still open. Both now rejected.
@@ -333,6 +359,6 @@ the chokepoint ensures every *sanctioned* drop is recorded; the CI guard ensures
 
 **Operator follow-ups created by this apply:**
 - ~~**Ship the durable pg-proxy role-gate**~~ ✅ **DONE 2026-06-06.** `PG_PROXY_DENIED_ROLES` shipped (repo `InstaNode-dev/instant-pg-proxy` created + PR #1, merge `5a86c93`), image `v0.2.0` built+pushed, deployed to `deploy/instant-pg-proxy` with `PG_PROXY_DENIED_ROLES=instanode_admin,instant_cust,postgres,doadmin`. Live-verified the closure is now pod-IP-independent (see §3a + Drill Log row 2). The closure no longer depends on the churning proxy-pod-IP reject lines.
-- ~~**On any `instant-pg-proxy` reschedule:** refresh the proxy-IP reject lines~~ — **no longer required for the security boundary** (the role-gate is now the durable boundary). The pg_hba IP reject lines are redundant belt-and-suspenders; leave them. Still recommended: add a proxy-pod-restart alert for visibility, and persist `PG_PROXY_DENIED_ROLES` into a committed proxy Deployment manifest (currently the env lives only on the live `kubectl patch` — a manual re-create of the Deployment would drop it).
+- ~~**On any `instant-pg-proxy` reschedule:** refresh the proxy-IP reject lines~~ — **no longer required for the security boundary** (the role-gate is now the durable boundary). The pg_hba IP reject lines are redundant belt-and-suspenders; leave them. ~~Still recommended: add a proxy-pod-restart alert for visibility, and persist `PG_PROXY_DENIED_ROLES` into a committed proxy Deployment manifest~~ — **✅ DONE 2026-06-06** (see the "RESIDUAL CLOSED" block in §3a and Drill Log row 3): the proxy Deployment+Service are committed to `InstaNode-dev/instant-pg-proxy` `k8s/` (verified no-op vs live via `kubectl diff`), and two log-based NR alerts (`pg-proxy-role-gate-disabled.json` + `pg-proxy-down.json`) + the admin-defense "pg-proxy public-path gate" dashboard page watch the gate. The proxy has no `/metrics`, so a `pgproxy_role_gate_denied_roles` gauge + synthetic-reject prober leg are the proper durable upgrade (follow-up).
 - **`k8s/data/postgres-customers.yaml` updated** to carry the mount/args/Recreate-strategy so a future repo apply does not silently revert the lockdown (shipped in the same follow-up PR).
 - The repo `apply.yml` workflow now includes `postgres-customers-lockdown.yaml` (safe — ConfigMap) but ALSO `networkpolicy.yaml`; running that workflow WOULD create the unenforced-today NetPol and default-deny the proxy path. Add it to the apply EXCLUDE list or add the pg-proxy ingress rule before anyone runs the workflow.
