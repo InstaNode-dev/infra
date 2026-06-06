@@ -19,6 +19,13 @@ metadata:
   namespace: instant-data
 spec:
   replicas: 1
+  # Recreate (NOT RollingUpdate): the PVC is ReadWriteOnce, so a rolling update
+  # deadlocks on a Multi-Attach error (new pod can't attach the volume while the
+  # old pod still holds it on another node). Recreate terminates the old pod
+  # first → brief downtime, acceptable for a single-replica stateful workload.
+  # (truehomie admin-lockdown apply 2026-06-06 hit + fixed this.)
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: postgres-customers
@@ -30,6 +37,17 @@ spec:
       containers:
         - name: postgres
           image: pgvector/pgvector:pg16
+          # truehomie-db-drop admin lockdown (2026-06-03 → applied 2026-06-06):
+          # start postgres with the custom pg_hba (mounted below) that rejects the
+          # admin superuser roles (instanode_admin/instant_cust) from the public
+          # pg-proxy path while preserving the in-cluster admin + customer usr_*
+          # paths. See k8s/data/postgres-customers-lockdown.yaml +
+          # POSTGRES-CUSTOMERS-LOCKDOWN-RUNBOOK.md.
+          args:
+            - "-c"
+            - "hba_file=/etc/postgresql/pg_hba.conf"
+            - "-c"
+            - "password_encryption=scram-sha-256"
           ports:
             - containerPort: 5432
           env:
@@ -45,6 +63,12 @@ spec:
           volumeMounts:
             - mountPath: /var/lib/postgresql/data
               name: data
+            # Admin-lockdown pg_hba (ConfigMap postgres-customers-hba). subPath
+            # mounts just the single file so PGDATA is untouched.
+            - name: hba
+              mountPath: /etc/postgresql/pg_hba.conf
+              subPath: pg_hba.conf
+              readOnly: true
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "instant_cust", "-d", "instant_customers"]
@@ -54,6 +78,12 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: postgres-customers-pvc
+        - name: hba
+          configMap:
+            name: postgres-customers-hba
+            items:
+              - key: pg_hba.conf
+                path: pg_hba.conf
 ---
 apiVersion: v1
 kind: Service
