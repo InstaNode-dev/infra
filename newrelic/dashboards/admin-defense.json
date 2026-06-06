@@ -1,6 +1,6 @@
 {
   "name": "instant-api — admin defense-in-depth",
-  "description": "Access patterns and brute-force probe signal for the admin surface (PR #66+ era). Source: audit_log records with audit_kind = 'admin.access' emitted by the admin allowlist middleware, plus Transaction events on ADMIN_PATH_PREFIX routes. Pairs with the admin-allowlist-breach + admin-probe-404-rate alerts.",
+  "description": "Access patterns and brute-force probe signal for the admin surface (PR #66+ era). Source: audit_log records with audit_kind = 'admin.access' emitted by the admin allowlist middleware, plus Transaction events on ADMIN_PATH_PREFIX routes. Pairs with the admin-allowlist-breach + admin-probe-404-rate alerts. The 'pg-proxy public-path gate' page tracks the instant-pg-proxy role-gate that bars privileged Postgres roles from pg.instanode.dev (2026-06-03 truehomie-db DROP fix); pairs with pg-proxy-role-gate-disabled + pg-proxy-down alerts.",
   "permissions": "PUBLIC_READ_WRITE",
   "pages": [
     {
@@ -62,6 +62,71 @@
               {
                 "accountIds": [0],
                 "query": "SELECT count(*) AS 'hits', latest(timestamp) AS 'last seen' FROM Log WHERE service = 'api' AND audit_kind = 'admin.access' FACET user_email, path_suffix SINCE 24 hours ago LIMIT 50"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        }
+      ]
+    },
+    {
+      "name": "pg-proxy public-path gate",
+      "description": "instant-pg-proxy role-gate (PG_PROXY_DENIED_ROLES) — the durable boundary barring privileged Postgres roles from the public pg.instanode.dev:5432 path. Closes the 2026-06-03 truehomie-db DROP vector. Source: instant-pg-proxy pod stdout (k8s_namespace_name='instant', k8s_label_app='instant-pg-proxy') via the newrelic-logging Fluent Bit DaemonSet. Pairs with pg-proxy-role-gate-disabled + pg-proxy-down alerts.",
+      "widgets": [
+        {
+          "title": "Role-gate denied_role_count==0 lines (gate DISABLED — must be 0) (3h)",
+          "layout": { "column": 1, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE k8s_namespace_name = 'instant' AND k8s_label_app = 'instant-pg-proxy' AND message LIKE '%pgproxy.role_gate%' AND message LIKE '%\"denied_role_count\":0%' SINCE 3 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false },
+            "thresholds": [
+              { "alertSeverity": "CRITICAL", "value": 1 }
+            ]
+          }
+        },
+        {
+          "title": "pg-proxy log volume — liveness (proxy down if flat 0) (3h)",
+          "layout": { "column": 5, "row": 1, "width": 8, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE k8s_namespace_name = 'instant' AND k8s_label_app = 'instant-pg-proxy' TIMESERIES AUTO SINCE 3 hours ago"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Privileged roles rejected at the public gate by user (24h)",
+          "layout": { "column": 1, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT count(*) FROM Log WHERE k8s_namespace_name = 'instant' AND k8s_label_app = 'instant-pg-proxy' AND message LIKE '%pgproxy.user_denied_public%' FACET capture(message, r'.*\"user\":\"(?P<u>[^\"]+)\".*') AS 'role' SINCE 24 hours ago LIMIT 25"
+              }
+            ],
+            "platformOptions": { "ignoreTimeRange": false }
+          }
+        },
+        {
+          "title": "Latest role-gate startup lines (denied_role_count should be 4) (24h)",
+          "layout": { "column": 7, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [0],
+                "query": "SELECT latest(message) AS 'role_gate line', latest(timestamp) AS 'at' FROM Log WHERE k8s_namespace_name = 'instant' AND k8s_label_app = 'instant-pg-proxy' AND message LIKE '%pgproxy.role_gate%' FACET k8s_pod_name SINCE 24 hours ago LIMIT 10"
               }
             ],
             "platformOptions": { "ignoreTimeRange": false }

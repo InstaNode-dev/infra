@@ -1,0 +1,31 @@
+{
+  "name": "instant-pg-proxy — role-gate DISABLED or proxy down (customer-DB admin exposure)",
+  "type": "NRQL",
+  "description": "P0 SECURITY. The instant-pg-proxy role-gate (PG_PROXY_DENIED_ROLES) is the durable boundary that bars privileged/superuser roles (instanode_admin, instant_cust, postgres, doadmin) from authenticating over the public pg.instanode.dev:5432 path — it closes the 2026-06-03 truehomie-db DROP DATABASE vector. If the gate is disabled (env dropped on a Deployment re-create) OR the proxy goes down, the customer-DB admin exposure reopens.\n\nThis alert has TWO terms:\n  (A) CRITICAL — gate explicitly DISABLED: the proxy logs `pgproxy.role_gate` with `\"denied_role_count\":0` at startup. A non-zero count = gate ON; 0 = inert passthrough (no roles barred). This fires the moment a pod starts with PG_PROXY_DENIED_ROLES empty/missing (e.g. a Deployment re-create that dropped the env). Text-matched on the JSON log so it is robust regardless of whether the numeric field is lifted as an NR attribute.\n  (B) CRITICAL — proxy SILENT (down): zero `pgproxy.*` log records from the instant-pg-proxy pods in 10m. The proxy logs continuously (every connection logs at debug, every reject logs `pgproxy.user_denied_public` WARN, and each pod logs `pgproxy.role_gate` + `pgproxy.starting` on boot), so a 10-minute silence = crashed/evicted/scaled-to-zero proxy and the public path is either broken (fail-safe) or being served by something else.\n\nINTERIM SIGNAL — the proxy exposes NO /metrics endpoint today (it is a thin TCP proxy with slog JSON to stdout only). This log-based alert is the lowest-effort reliable signal and requires zero code change. PROPER FOLLOW-UP (durable upgrade): add a `pgproxy_role_gate_denied_roles` gauge + an HTTP /metrics listener to the proxy (repo InstaNode-dev/instant-pg-proxy), scrape it from Prometheus, and add a metric-based rule (gate gauge == 0) PLUS a synthetic-reject prober leg in the worker (open a raw StartupMessage to pg.instanode.dev as instanode_admin and assert a FATAL 28000 'role is not permitted over the public endpoint'). Until then, this log alert is the alarm.\n\nSource: stdout of instant-pg-proxy pods (k8s_namespace_name='instant', k8s_label_app='instant-pg-proxy'), shipped to NR via the newrelic-logging Fluent Bit DaemonSet. Manifest source of truth: InstaNode-dev/instant-pg-proxy k8s/deployment.yaml. Runbook: infra/POSTGRES-CUSTOMERS-LOCKDOWN-RUNBOOK.md §3a + §9.\n\nWhen this fires:\n  1. `kubectl get deploy/instant-pg-proxy -n instant -o jsonpath='{.spec.template.spec.containers[0].env}'` — confirm PG_PROXY_DENIED_ROLES=instanode_admin,instant_cust,postgres,doadmin is present.\n  2. If missing: `kubectl apply -f k8s/` from InstaNode-dev/instant-pg-proxy (restores the gate from source of truth).\n  3. `kubectl logs -n instant -l app=instant-pg-proxy | grep role_gate` — verify denied_role_count is back to 4.\n  4. Externally verify the boundary: `psql 'postgresql://instanode_admin:<pw>@pg.instanode.dev:5432/postgres'` must be REJECTED with FATAL 28000 (not reach scram).",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE k8s_namespace_name = 'instant' AND k8s_label_app = 'instant-pg-proxy' AND message LIKE '%pgproxy.role_gate%' AND message LIKE '%\"denied_role_count\":0%'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 60,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
