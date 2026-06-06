@@ -1436,6 +1436,87 @@
               "ignoreTimeRange": false
             }
           }
+        },
+        {
+          "title": "Layer-3 payment prober — outcomes per leg (6h) [money heartbeat]",
+          "layout": {
+            "column": 1,
+            "row": 75,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT sum(instant_payment_probe_outcome_total) FROM Metric WHERE metricName = 'instant_payment_probe_outcome_total' FACET leg, result TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Layer-3 payment prober — fails (last 6h, must be 0; degraded excluded)",
+          "layout": {
+            "column": 7,
+            "row": 75,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT sum(instant_payment_probe_outcome_total) AS 'fails' FROM Metric WHERE metricName = 'instant_payment_probe_outcome_total' AND result = 'fail' SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
+            "thresholds": [
+              {
+                "alertSeverity": "CRITICAL",
+                "value": 1
+              }
+            ]
+          }
+        },
+        {
+          "title": "Layer-3 payment prober — P95 latency per leg (6h)",
+          "layout": {
+            "column": 10,
+            "row": 75,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT percentile(instant_payment_probe_latency_seconds, 95) AS 'p95' FROM Metric WHERE metricName = 'instant_payment_probe_latency_seconds' FACET leg TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
         }
       ]
     }

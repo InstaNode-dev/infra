@@ -790,6 +790,52 @@ spec:
               the worker structured slog ERROR `deploy_probe_failed leg=...
               reason=...`. Source: worker/internal/jobs/deploy_probe.go.
 
+    # Layer-3 payment prober (the money heartbeat). Every 5 minutes the
+    # worker drives the iframe-free payment-funnel contract path against
+    # prod: checkout reachability (POST /api/v1/billing/checkout, non-5xx),
+    # billing + invoices read surfaces (non-5xx), the webhook signature
+    # SECURITY contract (POST /razorpay/webhook with a garbage unsigned
+    # payload MUST be rejected 400 invalid_signature), and an OPTIONAL
+    # test-mode upgrade proof (inject a correctly-signed TEST webhook →
+    # assert teams.plan_tier flips → reap the cohort team). Any fail
+    # outcome over a 10-minute window pages — at the 5-minute cadence two
+    # consecutive fail ticks is an unambiguous paid-funnel regression, not
+    # a flake. result="degraded" is the config-unset / slow-but-correct
+    # state (no test webhook secret, no JWT secret, or over-budget) and is
+    # EXCLUDED, so the prober never false-pages before the operator lights
+    # PAYMENT_PROBE_ENABLED. Mirrors payment-probe-fail.json in
+    # newrelic/alerts/. Forum verdict: docs/ci/FORUM-PAYMENT-E2E-TOOLING.md §4.
+    - name: instant-worker-payment-probe
+      rules:
+        - alert: PaymentProbeFail
+          expr: |
+            sum(increase(instant_payment_probe_outcome_total{result="fail"}[10m])) > 0
+          for: 10m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "Layer-3 payment prober fail (paid revenue path broken in prod)"
+            description: |
+              instant_payment_probe_outcome_total{result="fail"} > 0 in 10m.
+              The Layer-3 payment prober (the money heartbeat) drives the
+              iframe-free payment-funnel contract path against prod every 5
+              minutes. A fail outcome means one of: checkout_reachable —
+              POST /api/v1/billing/checkout returned a 5xx (handler crash;
+              a 402/409/502 blocked-but-alive shape is a PASS while Razorpay
+              live-recurring is operator-blocked); billing_state /
+              invoices_reachable — GET /api/v1/billing[/invoices] 5xx (a
+              paid-tier read-surface regression); webhook_security — the
+              /razorpay/webhook signature gate ACCEPTED an unsigned payload
+              (a CRITICAL security regression — a forged success could drive
+              a free upgrade) OR returned a non-canonical error_code; or
+              upgrade_webhook_e2e — a signed TEST-mode subscription.charged
+              did NOT flip teams.plan_tier (the rule-12 downstream truth
+              surface, NOT a webhook 200). Cross-correlate against audit_log
+              kind=payment_probe_failed + the worker structured slog ERROR
+              `payment_probe_failed leg=... reason=...`. Source:
+              worker/internal/jobs/payment_probe.go.
+
     # GitHub App push-to-deploy pipeline (P4, pre-staged 2026-06-03).
     # Metrics emitted by api/internal/handlers/github_webhook.go:
     #   instant_github_webhook_received_total{event,result}
