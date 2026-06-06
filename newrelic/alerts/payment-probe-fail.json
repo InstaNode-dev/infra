@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — payment_probe_failed [Layer-3 money heartbeat: paid revenue path broken in prod]",
+  "type": "NRQL",
+  "description": "P1 page on ANY occurrence of instant_payment_probe_outcome_total{result=\"fail\"}. The Layer-3 payment prober (the money heartbeat — forum verdict docs/ci/FORUM-PAYMENT-E2E-TOOLING.md §4 Layer 3) drives the iframe-free payment-funnel contract path against prod every 5 minutes. A fail outcome means one of: (a) checkout_reachable — POST /api/v1/billing/checkout returned a 5xx (handler crash/regression — NOT a 402/409/502 blocked-but-alive shape, which the prober treats as PASS while Razorpay live-recurring is operator-blocked); (b) billing_state / invoices_reachable — GET /api/v1/billing or /api/v1/billing/invoices returned a 5xx (a paid-tier read-surface regression); (c) webhook_security — POST /razorpay/webhook ACCEPTED an unsigned/garbage payload (a CRITICAL security regression: the signature gate would let a forged 'success' drive a free upgrade) OR rejected it with a non-canonical error_code; (d) upgrade_webhook_e2e — a correctly-signed TEST-mode subscription.charged was injected against a fresh cohort team but teams.plan_tier did NOT advance (the upgrade pipeline is broken — this is the rule-12 downstream truth surface, NOT a webhook 200). result='degraded' is EXCLUDED from this alert (it is the config-unset / slow-but-correct state — no test webhook secret, no JWT secret, or over-budget latency — so the prober never false-pages before the operator wires PAYMENT_PROBE_ENABLED + the test secret). Cross-correlate against the audit_log row written by the worker (kind=payment_probe_failed, actor='system:payment_probe') AND the structured slog ERROR line payment_probe_failed leg=... reason=... — same content on both surfaces. cohort='synthetic' so this never pollutes billing/revenue dashboards. Source: worker/internal/jobs/payment_probe.go (PaymentProbeWorker), metric registered in worker/internal/metrics/metrics.go (PaymentProbeOutcomeTotal). Threshold ABOVE 0 with a 10m window: a single fail tick over 10 minutes (two ticks at the 5-minute cadence) is an unambiguous paid-funnel regression, not a flake. AWAITING operator PAYMENT_PROBE_ENABLED=true (and, for the upgrade leg, RAZORPAY_TEST_WEBHOOK_SECRET) before any series materialises.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_payment_probe_outcome_total) FROM Metric WHERE metricName = 'instant_payment_probe_outcome_total' AND result = 'fail'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
