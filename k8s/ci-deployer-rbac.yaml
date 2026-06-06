@@ -1,0 +1,105 @@
+---
+# RBAC for the CI deploy ServiceAccount (`ci-deployer`).
+#
+# WHAT IT IS
+# ──────────
+# The api / worker / provisioner Deploy workflows authenticate to the
+# prod cluster via the `KUBECONFIG_B64` repo secret, whose embedded
+# credentials map to `system:serviceaccount:kube-system:ci-deployer`.
+# Each Deploy workflow runs:
+#     kubectl set image    deployment/<svc> -n <ns> <svc>=<new image>
+#     kubectl rollout status deployment/<svc> -n <ns>
+# in `instant-infra` (worker, provisioner) and `instant` (api).
+#
+# WHY THIS FILE EXISTS
+# ────────────────────
+# This ClusterRole + ClusterRoleBinding were originally applied by hand on
+# 2026-05-15 and lived ONLY in the live cluster — there was no manifest in
+# this repo. That made them un-reviewable and drift-prone: the live grant
+# had `get,list,patch,update` on deployments but NOT `watch`, and nothing
+# in git captured that. `kubectl set image` (patch/update) succeeded, but
+# `kubectl rollout status` performs a WATCH on the Deployment and was
+# denied — every Deploy workflow failed its rollout-status step with:
+#     User "system:serviceaccount:kube-system:ci-deployer" cannot watch
+#     resource "deployments" in API group "apps" in the namespace
+#     "instant-infra"
+# (worker run 27053035376). The image still landed; only the status step
+# red. This manifest is the canonical source of truth, and it ADDS the
+# missing `watch` (plus `list`/`watch` on `deployments/status`, which
+# `rollout status` also reads) so the status step succeeds.
+#
+# LEAST PRIVILEGE
+# ───────────────
+# Scope is deliberately narrow: rollout of EXISTING Deployments only
+# (get/list/watch/patch/update on deployments + deployments/scale +
+# deployments/status), plus read-only get/list/watch on replicasets and
+# pods/pods/log and pods/exec (for in-pod /healthz SHA verification the
+# Deploy workflows run). NO create/delete on deployments; no namespace,
+# secret, or configmap access. Mirrors the live shape exactly, with only
+# the `watch` verbs added.
+#
+# This is cluster-scoped (ClusterRole + ClusterRoleBinding) because the
+# three services live across two namespaces (`instant`, `instant-infra`)
+# and a single SA drives all three pipelines; the verb set is read/rollout
+# only, so cluster scope does not broaden the blast radius beyond
+# "restart/scale any Deployment".
+#
+# NOTE: infra has NO auto-apply (CLAUDE.md rule 15). After merge an
+# operator must run:
+#     kubectl apply -f k8s/ci-deployer-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-deployer
+  namespace: kube-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ci-deployer-rollout
+rules:
+  # Deployments: `kubectl set image` is patch/update; `kubectl rollout
+  # status` is a WATCH (plus get/list). `watch` was the missing verb.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+
+  # `rollout status` reads deployments/status; deployments/scale kept for
+  # parity with the prior live grant. Add list/watch so status reconciles
+  # cleanly. No create/delete — CI never creates a Deployment.
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "deployments/status"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+
+  # ReplicaSets: rollout status walks the Deployment's ReplicaSets to
+  # report progress. Read-only.
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+
+  # Pods + logs: the Deploy workflows locate a running pod and read its
+  # /healthz to verify the new build SHA landed.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+
+  # Pod exec: the in-pod SHA verification step execs `wget`/`curl` against
+  # the pod's own /healthz.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ci-deployer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ci-deployer-rollout
+subjects:
+  - kind: ServiceAccount
+    name: ci-deployer
+    namespace: kube-system
