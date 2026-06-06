@@ -27,13 +27,29 @@
 | C4 | The `postgres-customers` **Service is ClusterIP** (no `type:` field). The public exposure is via the external `instant-pg-proxy` + ingress-nginx `tcp-services`, **NOT** this Service. | `k8s/data/postgres-customers.yaml` Service spec |
 | C5 | A `postgres-customers-ingress` NetworkPolicy already exists allowing ingress on 5432 only from provisioner/migrator/worker (all `instant-infra`). It does **not** list pg-proxy. **Its prod-apply state is unverified** (infra has no auto-apply). | `k8s/data/networkpolicy.yaml` |
 
-### STILL HYPOTHESIS — NOT confirmable from this repo (do not assert)
+### CONFIRMED LIVE during the 2026-06-06 apply session (supersedes H1–H3 below)
 
-| # | Open item | Why it can't be confirmed here |
+| # | Finding | How confirmed |
+|---|---|---|
+| L1 | **TWO superuser roles exist on the prod customer pod:** `instanode_admin` (rolsuper=t — the role api/worker connect with via `CUSTOMER_DATABASE_URL`) AND `instant_cust` (rolsuper=t + createdb + createrole — the `POSTGRES_USER` the provisioner connects with via `POSTGRES_CUSTOMERS_URL`). The PR's pg_hba listed only `instant_cust`. **Manifest FIXED to reject BOTH** before apply — else the catch-all customer rule re-opens the vector for `instanode_admin` (the confirmed truehomie role). | `psql -tAc "select rolname,rolsuper from pg_roles where rolsuper"`; `kubectl get secret instant-secrets -o jsonpath CUSTOMER_DATABASE_URL` → `instanode_admin`; provisioner deploy env `POSTGRES_CUSTOMERS_URL` → `instant_cust` |
+| L2 | **A LIVE pg_hba stopgap was already on the pod** (from the 2026-06-03 incident): `host all instanode_admin <pod-ip>/32 reject` for the THEN proxy pod IPs (`10.109.3.201`, `10.109.0.101`), plus catch-all `host all all all scram`. One rejected IP (`10.109.3.201`) is now **STALE** — the proxy rescheduled to `10.109.4.113` — so the stopgap is partially broken. This ConfigMap's **role-keyed** reject is the churn-proof replacement. Live file backed up at `$PGDATA/pg_hba.conf.bak.2026-06-03`. | `kubectl exec … cat $PGDATA/pg_hba.conf`; `kubectl get pods -l app=instant-pg-proxy -o wide` |
+| L3 | **pg-proxy is a custom TCP proxy that SNATs.** `instant-pg-proxy:v0.1.0` (in `instant` ns) routes by Redis prefix `pg_route:` with `PG_PROXY_FALLBACK_BACKEND=postgres-customers.instant-data.svc:5432`. Being a TCP proxy it terminates inbound + re-originates, so customer traffic arrives at postgres-customers as the **proxy pod IP (10.x)**. This confirms the role-based (not source-IP) reject is the correct boundary, and confirms the **fallback** would forward an admin connection straight through (the live vector). | `kubectl get deploy/instant-pg-proxy -o jsonpath env` |
+| L4 | **The `postgres-customers-ingress` NetworkPolicy is NOT applied in prod** (`kubectl get netpol -n instant-data` → "No resources found"). Cilium IS the CNI (policies would enforce if applied). So the network layer provides **zero** protection today — the pg_hba role-reject is the **sole** boundary. The NetworkPolicy was therefore **NOT applied** in this session (applying it as-is would default-deny + break the proxy path, which is not in its allow-list). | `kubectl get networkpolicy -n instant-data`; `kubectl get ds -n kube-system \| grep cilium` |
+| L5 | **No committed public-admin automation.** `grep -rI pg.instanode.dev` across all repos finds it only as the customer-facing `POSTGRES_PUBLIC_HOST` (the `usr_*` path); nothing pairs it with an admin DSN. `tcp-services` cm currently maps `5432 → instant/instant-pg-proxy` (its `last-applied` annotation shows it was ORIGINALLY `5432 → instant-data/postgres-customers`, i.e. a former direct-to-pod route — historical corroboration of the vector). | `grep`; `kubectl get cm -n ingress-nginx tcp-services -o yaml` |
+
+> **Net:** H1's *vector* is now fully corroborated end-to-end (public DNS → LB →
+> ingress tcp-services → SNATting pg-proxy with a fallback → catch-all pg_hba),
+> the proxy behaviour (H2) and NetPol non-enforcement (H3) are RESOLVED above. We
+> still did NOT attempt auth as the admin role (no destructive pentest); the
+> apply-time external test (§5b) uses a connection-rejection probe only.
+
+### ORIGINAL HYPOTHESES (pre-apply; superseded by L1–L5 above)
+
+| # | Open item | Why it could not be confirmed at PR time |
 |---|---|---|
 | H1 | That an external actor **actually authenticated** as the admin role over the public path. | We deliberately did **not** attempt auth (out-of-scope noisy/destructive pentest). C1–C3 prove the path is *open*, not that it was *used*. |
-| H2 | The `instant-pg-proxy`'s own role-gate / `pg_hba` behaviour and whether it already blocks the admin role. | The proxy config lives in the **separate repo `InstaNode-dev/instant-pg-proxy`** (per the audit doc), not here. |
-| H3 | Whether the existing `postgres-customers-ingress` NetworkPolicy is enforced in prod. | infra has no auto-apply; requires a live `kubectl get netpol -n instant-data` (operator). |
+| H2 | The `instant-pg-proxy`'s own role-gate / `pg_hba` behaviour and whether it already blocks the admin role. | The proxy config lives in the **separate repo `InstaNode-dev/instant-pg-proxy`**. **RESOLVED L3:** it SNATs + has an open fallback (no role gate in v0.1.0). |
+| H3 | Whether the existing `postgres-customers-ingress` NetworkPolicy is enforced in prod. | infra has no auto-apply; requires a live `kubectl get netpol -n instant-data` (operator). **RESOLVED L4:** NOT applied. |
 
 > **Net:** the exposure (public-reachable customer-Postgres listener + a
 > catch-all default pg_hba that lets the admin role auth from anywhere) is
@@ -106,6 +122,41 @@ kubectl exec -n instant-data deploy/postgres-customers -- \
   the NetPol, rely on the pg_hba role-reject alone. **If customers do NOT
   currently work, that is a pre-existing issue — do not conflate it with this
   lockdown.**
+
+### 3a. ⚠️ The pg-proxy SNAT problem — proxy-pod-IP reject is REQUIRED (and churns)
+
+**LIVE-VERIFIED 2026-06-06, and it changes the design:** `instant-pg-proxy` is a
+normal in-cluster pod (not hostNetwork) that terminates the inbound TCP and
+re-originates to `postgres-customers`. So EVERY public connection — including an
+external `psql -U instanode_admin` — arrives SNAT'd to a **proxy pod IP inside
+10.109.x (i.e. inside 10.0.0.0/8)**. A plain `instanode_admin 10.0.0.0/8 allow`
+would therefore MATCH a SNAT'd external admin and NOT close the vector. Baseline
+probe before apply confirmed the live vector is OPEN: `psql -U instanode_admin`
+over `pg.instanode.dev` returns `password authentication failed` (it REACHED
+scram). The proxy v0.1.0 has no role gate and an open fallback.
+
+**Consequence for the ConfigMap:** the admin reject MUST list the CURRENT proxy
+pod IPs and be ordered BEFORE the `10.0.0.0/8` allow (first-match wins). Get them:
+
+```bash
+kubectl get pods -n instant -l app=instant-pg-proxy -o jsonpath='{range .items[*]}{.status.podIP}{"\n"}{end}'
+# Put these into the `host all instanode_admin <ip>/32 reject` (and instant_cust)
+# lines at the TOP of the admin block in postgres-customers-lockdown.yaml.
+```
+
+**⚠️ CHURN: these IPs change when the proxy reschedules** — that is exactly how
+the 2026-06-03 hand-stopgap silently broke (it listed `10.109.3.201`, now dead).
+After ANY proxy reschedule, re-run the command above, update the two reject lines,
+re-apply the ConfigMap, and `SELECT pg_reload_conf()`. The **durable** churn-proof
+closer is the pg-proxy's own privileged-role deny (`PG_PROXY_DENIED_ROLES`, staged
+in repo `InstaNode-dev/instant-pg-proxy` per memory) — once that ships and is
+deployed, the proxy rejects admin roles before forwarding and these IP lines
+become redundant belt-and-suspenders. **Operator follow-up: ship the proxy
+role-gate; add an alert on proxy pod restarts so the pg_hba IPs can be refreshed.**
+
+- If the proxy-pod-IP reject lines in the ConfigMap do NOT match the live proxy
+  IPs at apply time → FIX them first, else the lockdown is a no-op for the live
+  public path.
 
 ---
 

@@ -94,29 +94,87 @@ data:
   pg_hba.conf: |
     # MANAGED BY infra/k8s/data/postgres-customers-lockdown.yaml — do not hand-edit on the pod.
     # truehomie-db-drop hardening (2026-06-03). See lockdown runbook.
+    #
+    # LIVE-VERIFIED 2026-06-06 (apply session): on the prod pod there are TWO
+    # superuser roles — `instanode_admin` (rolsuper=t, the role the api/worker
+    # connect with via CUSTOMER_DATABASE_URL) AND `instant_cust` (rolsuper=t +
+    # createdb + createrole, the POSTGRES_USER the provisioner connects with via
+    # POSTGRES_CUSTOMERS_URL). The CONFIRMED truehomie vector role is
+    # `instanode_admin` (memory + DATA-INTEGRITY-DROP-PATH-AUDIT.md §H1). BOTH
+    # superusers MUST be reject-listed from the public internet, else the catch-
+    # all customer rule below silently re-opens the vector for whichever admin
+    # role is omitted. Earlier revision of this file only listed `instant_cust`
+    # and would have left the actual vector (`instanode_admin`) open.
 
-    # --- Local unix socket: required by the postgres entrypoint / pg_isready
-    #     readiness probe (runs as the in-pod postgres user). Peer auth.
-    local   all             all                                     peer
+    # --- Local unix socket + loopback: required by the postgres entrypoint /
+    #     pg_isready readiness probe AND the backup CronJob's local pg_dumpall.
+    #     Matches the live pod config (trust) so neither path regresses. The
+    #     unix socket is in-pod only; it is not a public attack surface.
+    local   all             all                                     trust
+    host    all             all             127.0.0.1/32            trust
+    host    all             all             ::1/128                 trust
+    local   replication     all                                     trust
+    host    replication     all             127.0.0.1/32            trust
+    host    replication     all             ::1/128                 trust
 
-    # --- ADMIN / superuser role (`instant_cust` = POSTGRES_USER) ---------------
-    # Allowed ONLY from in-cluster RFC1918 (pod + svc CIDR). This is the
-    # provisioner's POSTGRES_CUSTOMERS_URL admin DSN path, plus migrator/worker.
+    # --- ADMIN / superuser roles (`instanode_admin` + `instant_cust`) ----------
+    #
+    # ⚠️ CRITICAL ORDERING — the pg-proxy SNAT problem (LIVE-VERIFIED 2026-06-06):
+    # The public customer path is pg.instanode.dev → ingress-nginx tcp-services
+    # → instant-pg-proxy (a normal in-cluster pod, NOT hostNetwork) → here. The
+    # proxy TERMINATES the inbound TCP and RE-ORIGINATES to postgres-customers,
+    # so EVERY public connection (incl. an external `-U instanode_admin`) arrives
+    # at this pod SNAT'd to a PROXY POD IP inside 10.109.x (== inside 10.0.0.0/8).
+    # The proxy v0.1.0 has NO role gate and an OPEN fallback backend, so today an
+    # external admin connection reaches scram (LIVE-VERIFIED: `psql -U
+    # instanode_admin` over the public host returns "password authentication
+    # failed", i.e. it REACHED auth — the live vector is OPEN right now).
+    # Therefore a plain `instanode_admin 10.0.0.0/8 allow` would NOT close the
+    # vector — the SNAT'd external admin would match the allow. We MUST reject
+    # the admin roles FROM THE PROXY POD IPs *before* the broad in-cluster allow.
+    # (first-match wins, so the proxy-IP reject must come first.)
+    #
+    # ── proxy-pod-IP admin reject (the actual public-path closer) ──────────────
+    # LIVE-VERIFIED proxy pod IPs 2026-06-06: 10.109.4.113, 10.109.0.101.
+    # ⚠️ CHURN DEPENDENCY: if instant-pg-proxy reschedules, these IPs change and
+    # this reject goes stale (exactly how the 2026-06-03 hand-stopgap broke —
+    # it listed 10.109.3.201 which is now dead). The DURABLE closer is the
+    # pg-proxy's own privileged-role deny (`PG_PROXY_DENIED_ROLES`, staged in
+    # repo InstaNode-dev/instant-pg-proxy) — once that ships, these two IP lines
+    # become redundant belt-and-suspenders. Until then: re-`kubectl get pods -n
+    # instant -l app=instant-pg-proxy -o wide` and update these lines + reload on
+    # any proxy reschedule. Operator alert: see runbook §3a.
+    host    all             instanode_admin 10.109.4.113/32         reject
+    host    all             instanode_admin 10.109.0.101/32         reject
+    host    all             instant_cust    10.109.4.113/32         reject
+    host    all             instant_cust    10.109.0.101/32         reject
+    #
+    # ── in-cluster admin allow (legit consumers: provisioner/api/worker/migrator)
+    # All inside 10.0.0.0/8 (DOKS pod CIDR 10.109.0.0/16, svc CIDR 10.108.0.0/16
+    # — LIVE-VERIFIED 2026-06-06). Reached here AFTER the proxy-IP reject above,
+    # so a legit consumer pod (different IP from the proxy) still authenticates.
+    # This is the api/worker CUSTOMER_DATABASE_URL path (instanode_admin) AND the
+    # provisioner POSTGRES_CUSTOMERS_URL path (instant_cust), plus migrator.
+    host    all             instanode_admin 10.0.0.0/8              scram-sha-256
     host    all             instant_cust    10.0.0.0/8              scram-sha-256
-    host    all             instant_cust    127.0.0.1/32           scram-sha-256
-    host    all             instant_cust    ::1/128                scram-sha-256
-    # Public internet (and anything NOT in-cluster): admin role is REJECTED.
-    # This is the line that closes the truehomie vector — an external psql
-    # `-U instant_cust` over pg.instanode.dev:5432 is refused at the hba layer
-    # BEFORE any password is checked, with NO ability to DROP.
+    #
+    # ── public internet (anything NOT in-cluster, e.g. a future direct route or
+    # NodePort that bypasses the proxy): admin roles REJECTED outright. Belt-and-
+    # suspenders on top of the proxy-IP reject — closes any non-proxied path.
+    host    all             instanode_admin 0.0.0.0/0              reject
+    host    all             instanode_admin ::/0                   reject
     host    all             instant_cust    0.0.0.0/0              reject
     host    all             instant_cust    ::/0                   reject
 
-    # --- Belt-and-suspenders: reject the bootstrap superuser `postgres` too,
-    #     in case a future image/migration creates it. In-cluster only.
+    # --- Belt-and-suspenders: reject the bootstrap superuser `postgres` and the
+    #     DO-managed `doadmin` too (neither exists on the customer pod today —
+    #     LIVE-VERIFIED 2026-06-06 — but a reject rule for an absent role is inert
+    #     and future-proofs against a future image/migration creating one).
     host    all             postgres        10.0.0.0/8             scram-sha-256
     host    all             postgres        0.0.0.0/0             reject
     host    all             postgres        ::/0                  reject
+    host    all             doadmin         0.0.0.0/0             reject
+    host    all             doadmin         ::/0                  reject
 
     # --- Customer per-tenant roles (`usr_<token>`, non-superuser) -------------
     # The LEGITIMATE customer connect path: pg.instanode.dev → pg-proxy →
