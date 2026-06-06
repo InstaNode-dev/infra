@@ -1,0 +1,139 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Wave 7 — Argo Rollouts canary for instant-api (OPERATOR-APPLY ONLY).
+#
+# This is the metric-gated, auto-rolling-back replacement for the plain
+# `apps/v1 Deployment instant-api` (k8s/app.yaml). It is NOT applied by any
+# CI pipeline. The `infra` repo has NO auto-apply (CLAUDE.md rule 15); nothing
+# here touches prod until an operator deliberately follows
+# CANARY-ROLLOUT-RUNBOOK.md.
+#
+# WHY: a bad image today reaches 100% of traffic the moment
+# `kubectl set image deployment/instant-api` runs (RollingUpdate), and a
+# regression is only caught AFTER users hit it — by an alert, minutes later.
+# A canary Rollout shifts a SMALL slice of live traffic to the new pods first,
+# bakes, then asks Prometheus/New Relic "did 5xx / auth-probe / deploy-health
+# get worse?" — and if so it ABORTS and shifts 100% of traffic back to the
+# previous (stable) ReplicaSet automatically. Auto-rollback, not detect-after.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# DROP-IN PARITY: this Rollout intentionally uses `workloadRef` to read its pod
+# template FROM the existing `Deployment/instant-api` rather than inlining a
+# (drift-prone) copy of the 400-line pod spec. The operator scales the
+# Deployment to 0 replicas (it becomes the template-of-record only) and the
+# Rollout owns the live ReplicaSets. This keeps replicas / resources / probes /
+# env / imagePullSecrets / affinity / preStop IDENTICAL to k8s/app.yaml with
+# ZERO duplication — and lets the operator revert by deleting the Rollout and
+# scaling the Deployment back up. See the runbook §convert and §rollback.
+#
+# Requires: the Argo Rollouts controller installed in the cluster (it is NOT
+# today — `kubectl get crd rollouts.argoproj.io` returns NotFound). Install per
+# the runbook §install before applying this file.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: instant-api
+  namespace: instant
+  labels:
+    app: instant-api
+    instanode.dev/canary: "true"
+  annotations:
+    # Same image-retention policy as the Deployment it replaces.
+    instanode.dev/image-pin-retention-days: "730"
+    # Operator note: the live image tag is owned by the api service pipeline,
+    # which after migration runs `kubectl argo rollouts set image instant-api
+    # api=ghcr.io/instanode-dev/instant-api:master-<sha>` (see runbook §ci).
+spec:
+  replicas: 2
+  # Selector + workloadRef MUST match the Deployment being replaced so the
+  # Rollout adopts the same pods/Service endpoints. The Service
+  # (k8s/app.yaml: Service instant-api) selects app=instant-api unchanged.
+  selector:
+    matchLabels:
+      app: instant-api
+  # workloadRef: read the pod template from the existing Deployment. The
+  # Rollout takes over the Deployment (scaling it to 0) so there is ONE
+  # source of truth for the pod spec — k8s/app.yaml. Any future env/probe/
+  # resource change still lands in app.yaml and the Rollout picks it up.
+  workloadRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: instant-api
+    # scaleDown: the controller scales the referenced Deployment to 0 on
+    # adoption so it does not also run pods. "onsuccess" = only after the
+    # Rollout is healthy, so a botched adoption can't leave 0 pods serving.
+    scaleDown: onsuccess
+  # 35s graceful drain — identical to the Deployment (matches main.go consts).
+  strategy:
+    canary:
+      # nginx ingress traffic routing: Argo Rollouts manages two Services
+      # (stable + canary) behind the existing `api` Ingress and writes the
+      # canary-weight annotations on a cloned canary Ingress so a precise %
+      # of REAL api.instanode.dev traffic hits the new pods. Without a traffic
+      # router the canary weight is approximated by pod COUNT only (still
+      # safe, just coarser) — see runbook §traffic for the trade-off and how
+      # to enable nginx routing. This block is commented until the operator
+      # creates the canary Service + confirms the Ingress name (runbook §traffic).
+      #
+      # trafficRouting:
+      #   nginx:
+      #     stableIngress: api            # the live Ingress (kubectl get ingress -n instant)
+      #     additionalIngressAnnotations:
+      #       canary-by-header: X-Canary  # optional: force-route testers to canary
+      canaryService: instant-api-canary
+      stableService: instant-api-stable
+      # ── The canary ladder: 10% → bake → analyse → 50% → analyse → 100% ──
+      # Matches the design doc §canary (10%→50%→100% with an AnalysisRun
+      # querying Prometheus, abort+rollback on failure, bake time).
+      steps:
+        - setWeight: 10
+        # Bake: hold 10% for 5m so the analysis below has a real traffic
+        # sample (and slow-burn regressions surface) before promoting.
+        - pause:
+            duration: 5m
+        # First gate at 10%: if any metric regresses, the Rollout ABORTS and
+        # traffic returns to the stable ReplicaSet (auto-rollback).
+        - analysis:
+            templates:
+              - templateName: instant-api-canary-analysis
+            args:
+              - name: canary-service
+                value: instant-api-canary
+              - name: stable-service
+                value: instant-api-stable
+        - setWeight: 50
+        - pause:
+            duration: 5m
+        # Second gate at 50% (broader blast-radius sample before full cutover).
+        - analysis:
+            templates:
+              - templateName: instant-api-canary-analysis
+            args:
+              - name: canary-service
+                value: instant-api-canary
+              - name: stable-service
+                value: instant-api-stable
+        - setWeight: 100
+        # Final bake before the canary ReplicaSet is promoted to stable and
+        # the old one is scaled down — leaves a window to manually abort.
+        - pause:
+            duration: 2m
+      # Keep the previous (stable) ReplicaSet fully scaled during the canary so
+      # an abort is an INSTANT traffic shift back — no cold-start on rollback.
+      maxSurge: "100%"
+      maxUnavailable: 0
+      # A controller-level background AnalysisRun is intentionally NOT used
+      # here; the step-scoped analyses above gate each promotion. (A background
+      # run is the place to add a continuous SLO probe in a later wave.)
+  # Same graceful-shutdown budget as the Deployment (preStop 5 + drain 28 + 2).
+  # The pod template (incl. terminationGracePeriodSeconds: 35) comes from the
+  # referenced Deployment via workloadRef, so it is NOT duplicated here.
+  # progressDeadlineSeconds: if the Rollout makes no progress in this window it
+  # is marked Degraded (a stuck canary is itself a signal). 600s ≈ the api's
+  # worst-case migration-heavy boot (startupProbe failureThreshold 60 × 10s).
+  progressDeadlineSeconds: 600
+  # On a Degraded/aborted Rollout, automatically roll the canary ReplicaSet
+  # back to the last stable one (belt-and-suspenders with the analysis abort).
+  progressDeadlineAbort: true
+  revisionHistoryLimit: 5

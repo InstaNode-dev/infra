@@ -1,0 +1,55 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Wave 7 — stable + canary Services for the instant-api Rollout (OPERATOR-APPLY).
+#
+# Argo Rollouts' canary strategy with a Service/traffic split needs TWO extra
+# Services it owns. The controller injects a `rollouts-pod-template-hash`
+# selector into each so that:
+#   • instant-api-stable  → always selects the CURRENT STABLE ReplicaSet's pods
+#   • instant-api-canary  → selects the CANARY ReplicaSet's pods during a rollout
+#
+# The existing `Service/instant-api` (k8s/app.yaml) and the `api` Ingress are
+# left UNCHANGED — they keep selecting `app: instant-api` (both ReplicaSets) so
+# the public path never breaks during migration. With nginx trafficRouting
+# enabled (runbook §traffic) the controller clones the `api` Ingress to a
+# canary Ingress weighted to instant-api-canary; without it, the weight is
+# approximated by pod count. Either way these two Services are the routing
+# endpoints the Rollout manages.
+#
+# Ports/targetPort MUST match Service/instant-api (8080→8080).
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: instant-api-stable
+  namespace: instant
+  labels:
+    app: instant-api
+    instanode.dev/canary: "true"
+spec:
+  type: ClusterIP
+  selector:
+    # The Rollout controller appends rollouts-pod-template-hash to this
+    # selector at runtime; do NOT add the hash by hand.
+    app: instant-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: instant-api-canary
+  namespace: instant
+  labels:
+    app: instant-api
+    instanode.dev/canary: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app: instant-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
