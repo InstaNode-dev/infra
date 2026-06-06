@@ -1,0 +1,30 @@
+{
+  "name": "instant-api — canary AnalysisRun aborted / auto-rollback fired (Wave 7)",
+  "type": "NRQL",
+  "description": "Fires when an instant-api canary Rollout's AnalysisRun reaches a non-Successful terminal phase (Failed / Error / Inconclusive) — i.e. a deploy was metric-gated and AUTO-ROLLED-BACK before reaching 100% of traffic. This is the success signal of Wave 7 working AND an operator-attention signal: a build regressed (5xx / deploy-job-failures / api-up / auth-probe breached the AnalysisTemplate thresholds in k8s/canary/analysistemplate-instant-api.yaml) and traffic returned to the stable ReplicaSet. P1: user-impact was CONTAINED (only the canary slice saw it, briefly) but a deploy is now stuck on the old image and needs a human to find+fix the regression and re-ship. Source metric: the Argo Rollouts controller's analysis_run_info{phase} (controller :8090/metrics), scraped into NR per CANARY-ROLLOUT-RUNBOOK.md §observability. Lazy: no series until the controller is installed + scraped + a canary actually runs (an abort is the unhealthy state). Cross-reference: kubectl argo rollouts get rollout instant-api -n instant + kubectl describe analysisrun -l rollout=instant-api -n instant for the per-metric measurement that failed.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT latest(analysis_run_info) FROM Metric WHERE name LIKE 'instant-api%' AND namespace = 'instant' AND phase IN ('Failed', 'Error', 'Inconclusive') FACET name, phase"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "NONE"
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

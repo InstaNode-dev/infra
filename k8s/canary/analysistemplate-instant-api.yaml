@@ -1,0 +1,151 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Wave 7 — AnalysisTemplate for the instant-api canary (OPERATOR-APPLY ONLY).
+#
+# Referenced by Rollout/instant-api (rollout-instant-api.yaml) at the 10% and
+# 50% steps. Each AnalysisRun spawned from this template runs the metrics below
+# against the in-cluster Prometheus (or New Relic — see the alternative provider
+# block). If ANY metric breaches its failureLimit, the AnalysisRun fails → the
+# Rollout aborts → traffic shifts back to the stable ReplicaSet. THIS is the
+# auto-rollback the CEO asked for: a bad deploy reverts on metric regression
+# instead of being detected after the fact.
+#
+# ── Metrics gated (all REAL, already emitted in prod; names verified against
+#    k8s/prometheus-rules.yaml + newrelic/alerts/) ──────────────────────────
+#   (a) HTTP 5xx rate of instant-api below threshold
+#         instant_http_errors_total{status_class="5xx"}
+#           / instant_http_request_duration_seconds_count        (< 2%)
+#       — mirrors the HighProvisionErrorRate Prom rule + api-5xx-rate-high NR
+#       alert (those page at 5% / 1%; the canary gate is tighter at 2% over the
+#       short canary window so a regressing build is caught before it pages).
+#   (b) instant_* deploy/health metric healthy
+#         increase(instant_deploy_job_failed_detected_total[...]) == 0   AND
+#         up{job="instant-api"} == 1
+#       — the DeployJobFailedDetectedSpike rule's signal; a new image that
+#       breaks the /deploy/new wedge or fails to scrape is unhealthy.
+#   (c) auth-probe success
+#         increase(instant_auth_probe_outcome_total{result="fail"}[...]) == 0
+#       — the AUTH-004 synthetic prober (CLAUDE.md rule 26 / auth-probe-fail
+#       NR alert). The login-regression class is exactly what a canary should
+#       block before 100% rollout.
+#
+# failureLimit/inconclusiveLimit follow the documented Argo Rollouts pattern:
+# a single hard breach fails the run (abort), and a no-data result is
+# inconclusive (does NOT auto-promote, does NOT falsely abort) up to a cap.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: instant-api-canary-analysis
+  namespace: instant
+  labels:
+    app: instant-api
+    instanode.dev/canary: "true"
+spec:
+  args:
+    - name: canary-service
+    - name: stable-service
+    # PROM_ADDRESS — the in-cluster Prometheus that scrapes instant-api
+    # /metrics (job="instant-api"). Default points at the conventional
+    # prometheus-operator Service; the operator overrides it to the real
+    # address at apply time (runbook §provider). NOTE: as of 2026-06-06 the
+    # prod cluster runs NO in-cluster Prometheus — live observability is New
+    # Relic. The operator EITHER stands up a Prometheus that scrapes
+    # instant-api /metrics, OR switches each metric to the New Relic provider
+    # block shown commented below. The runbook covers both.
+    - name: prometheus-address
+      value: "http://prometheus-operated.monitoring.svc.cluster.local:9090"
+  metrics:
+    # ── (a) 5xx rate ────────────────────────────────────────────────────────
+    - name: api-5xx-rate
+      # interval: re-query every 1m across the analysis; the 10%/50% steps each
+      # pause 5m before analysis so there is a real sample window.
+      interval: 1m
+      count: 5
+      # successCondition: 5xx fraction strictly below 2%. clamp_min guards the
+      # divide-by-zero on a quiet window (matches the Prom rule's 1e-9 guard).
+      successCondition: result[0] < 0.02
+      # failureLimit: 2 → two consecutive breaches abort (one transient blip
+      # does not nuke the rollout, a sustained regression does).
+      failureLimit: 2
+      # inconclusiveLimit: a no-data window (e.g. zero requests) is inconclusive,
+      # not a pass and not a fail — caps at 3 before the run is inconclusive
+      # (which the Rollout treats as "do not promote": safe-by-default).
+      inconclusiveLimit: 3
+      provider:
+        prometheus:
+          address: "{{args.prometheus-address}}"
+          query: |
+            sum(rate(instant_http_errors_total{job="instant-api",status_class="5xx"}[2m]))
+            /
+            clamp_min(
+              sum(rate(instant_http_request_duration_seconds_count{job="instant-api"}[2m])),
+              1e-9
+            )
+        # ── New Relic alternative (uncomment, comment out the prometheus block
+        #    above, and set the secret per runbook §provider). Mirrors the
+        #    api-5xx-rate-high.json NRQL truth surface. ──────────────────────
+        # newRelic:
+        #   profile: newrelic-secret   # Secret with personalApiKey + accountId
+        #   query: |
+        #     SELECT percentage(count(*), WHERE numeric(httpResponseCode) >= 500) / 100
+        #     FROM Transaction WHERE appName LIKE 'instant-api%' SINCE 2 minutes ago
+
+    # ── (b) deploy/health: no deploy-job failures during the canary ─────────
+    - name: deploy-job-failures
+      interval: 1m
+      count: 5
+      # No NEW deploy-job failures attributable to the canary window.
+      successCondition: result[0] == 0
+      failureLimit: 1
+      inconclusiveLimit: 3
+      provider:
+        prometheus:
+          address: "{{args.prometheus-address}}"
+          query: |
+            sum(increase(instant_deploy_job_failed_detected_total[5m]))
+        # newRelic alternative:
+        # newRelic:
+        #   profile: newrelic-secret
+        #   query: |
+        #     SELECT count(*) FROM Metric
+        #     WHERE metricName = 'instant_deploy_job_failed_detected_total'
+        #     SINCE 5 minutes ago
+
+    # ── (b') liveness: the new pods are actually scraping/up ─────────────────
+    - name: api-up
+      interval: 1m
+      count: 5
+      # At least one instant-api target is up. (A canary that crash-loops
+      # drops the scrape target; this catches a build that won't boot even if
+      # 5xx looks fine because there is no traffic reaching it.)
+      successCondition: result[0] >= 1
+      failureLimit: 2
+      inconclusiveLimit: 3
+      provider:
+        prometheus:
+          address: "{{args.prometheus-address}}"
+          query: |
+            sum(up{job="instant-api"})
+
+    # ── (c) auth-probe success (AUTH-004, CLAUDE.md rule 26) ────────────────
+    - name: auth-probe-failures
+      # The auth probe ticks every 5m, so query over a 10m window and re-check
+      # a few times across the canary so a probe tick is guaranteed to land.
+      interval: 2m
+      count: 4
+      successCondition: result[0] == 0
+      failureLimit: 1
+      inconclusiveLimit: 4
+      provider:
+        prometheus:
+          address: "{{args.prometheus-address}}"
+          query: |
+            sum(increase(instant_auth_probe_outcome_total{result="fail"}[10m]))
+        # newRelic alternative (mirrors auth-probe-fail.json):
+        # newRelic:
+        #   profile: newrelic-secret
+        #   query: |
+        #     SELECT count(*) FROM Metric
+        #     WHERE metricName = 'instant_auth_probe_outcome_total'
+        #       AND result = 'fail' SINCE 10 minutes ago

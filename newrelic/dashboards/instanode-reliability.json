@@ -1361,6 +1361,56 @@
               "ignoreTimeRange": false
             }
           }
+        },
+        {
+          "title": "Canary \u2014 instant-api rollout phase (Wave 7; Healthy/Progressing/Degraded/Paused)",
+          "layout": {
+            "column": 1,
+            "row": 69,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT latest(rollout_info) FROM Metric WHERE name = 'instant-api' AND namespace = 'instant' FACET phase TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Canary \u2014 instant-api AnalysisRun outcomes (auto-rollback = Failed/Error; Wave 7)",
+          "layout": {
+            "column": 7,
+            "row": 69,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.stacked-bar"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT count(*) FROM Metric WHERE name LIKE 'instant-api%' AND namespace = 'instant' AND metricName = 'analysis_run_info' FACET phase TIMESERIES SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
         }
       ]
     }
