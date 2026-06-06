@@ -301,3 +301,21 @@ is already shipped (audit doc):
 Together: this runbook removes the *unaudited external admin DROP capability*;
 the chokepoint ensures every *sanctioned* drop is recorded; the CI guard ensures a
 *new* unaudited drop call site cannot be merged.
+
+---
+
+## 9. Drill Log
+
+| Date | Operator | Action | Result |
+|---|---|---|---|
+| 2026-06-06 | Claude (operator-authorized apply, "no customers, low blast radius") | **APPLIED to do-nyc3-instant-prod.** Merged PR #61 (squash, merge commit `78cb6677`) after fixing the manifest for two live findings (see below). Applied ConfigMap `postgres-customers-hba`; patched `deploy/postgres-customers` to mount it + `-c hba_file=/etc/postgresql/pg_hba.conf -c password_encryption=scram-sha-256`; changed strategy `RollingUpdate→Recreate` (RWO PVC Multi-Attach). Did NOT apply `networkpolicy.yaml` (verified NOT enforced in prod; applying as-is would default-deny the proxy path). | **SUCCESS.** External admin REJECTED at pg_hba (both `instanode_admin` + `instant_cust`, error names the SNAT'd proxy pod IP) — baseline beforehand reached scram (vector was OPEN). In-cluster admin preserved: provisioner `instant_cust` CREATE/DROP smoke OK, api/worker `instanode_admin` connect + `pg_database_size` OK, customer `usr_*` path still reaches scram. No rollback. |
+
+**Manifest fixes made before apply (live pre-apply verification):**
+1. **`instanode_admin` was missing.** Prod has TWO superusers — `instanode_admin` (api/worker `CUSTOMER_DATABASE_URL`, the CONFIRMED truehomie vector) and `instant_cust` (provisioner `POSTGRES_CUSTOMERS_URL`). The original PR rejected only `instant_cust`; `instanode_admin` would have matched the catch-all customer allow → vector still open. Both now rejected.
+2. **pg-proxy SNAT defeats source-CIDR.** instant-pg-proxy (in-cluster, no hostNetwork) re-originates TCP, so external admin arrives SNAT'd to a proxy pod IP inside `10.0.0.0/8` — a plain `10.0.0.0/8 allow` matches it. Added proxy-pod-IP `reject` lines (`10.109.4.113`, `10.109.0.101`) ordered BEFORE the in-cluster allow. **Verified in the reject error message** (`rejects connection for host "10.109.0.101"`). ⚠️ Churn dependency, see §3a.
+
+**Operator follow-ups created by this apply:**
+- **Ship the durable pg-proxy role-gate** (`PG_PROXY_DENIED_ROLES` in `InstaNode-dev/instant-pg-proxy`, staged per memory) so the closure no longer depends on the churning proxy-pod-IP reject lines in the ConfigMap.
+- **On any `instant-pg-proxy` reschedule:** refresh the two `host all instanode_admin/instant_cust <proxy-ip>/32 reject` lines in `postgres-customers-lockdown.yaml`, re-apply, `SELECT pg_reload_conf()`. Add a proxy-pod-restart alert.
+- **`k8s/data/postgres-customers.yaml` updated** to carry the mount/args/Recreate-strategy so a future repo apply does not silently revert the lockdown (shipped in the same follow-up PR).
+- The repo `apply.yml` workflow now includes `postgres-customers-lockdown.yaml` (safe — ConfigMap) but ALSO `networkpolicy.yaml`; running that workflow WOULD create the unenforced-today NetPol and default-deny the proxy path. Add it to the apply EXCLUDE list or add the pg-proxy ingress rule before anyone runs the workflow.
