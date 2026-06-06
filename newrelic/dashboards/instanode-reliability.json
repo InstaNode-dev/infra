@@ -1411,6 +1411,31 @@
               "ignoreTimeRange": false
             }
           }
+        },
+        {
+          "title": "Provisioner \u2014 customer-data drops by type/backend/outcome (24h; truehomie audit)",
+          "layout": {
+            "column": 1,
+            "row": 72,
+            "width": 12,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT sum(instant_provisioner_drop_total) FROM Metric WHERE metricName = 'instant_provisioner_drop_total' FACET resource_type, backend, outcome TIMESERIES SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
         }
       ]
     }
