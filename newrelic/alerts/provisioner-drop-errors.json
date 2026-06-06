@@ -1,0 +1,31 @@
+{
+  "name": "instant-provisioner — customer-data drop errors (backend Deprovision failing through the chokepoint, infra leaking)",
+  "type": "NRQL",
+  "description": "P2 observability/recoverable. instant_provisioner_drop_total{outcome='error'} > 0 sustained >30m, faceted by resource_type + backend. A backend Deprovision is failing through server.guardedDrop: the customer-data destruction did not complete, so the backing infra (DB / role / cache / queue) is leaking unreclaimed (a slow capacity + cost leak). A single blip self-heals when the caller (TTL reaper / team-deletion / user DELETE) retries; a sustained rate means a backend is wedged. Walk the resource_type / backend labels to the targeted backend's /healthz and the provisioner circuit-breaker state. Source: provisioner/internal/server/drop_chokepoint.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_provisioner_drop_total) FROM Metric WHERE metricName = 'instant_provisioner_drop_total' AND outcome = 'error' FACET resource_type, backend"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 1800,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

@@ -1,0 +1,31 @@
+{
+  "name": "instant-provisioner — customer-data drop rate abnormally high (possible truehomie-class mass-deprovision burst)",
+  "type": "NRQL",
+  "description": "P1 user-visible/data-loss-adjacent. rate(instant_provisioner_drop_total{outcome='ok'}) > 0.2/s sustained 10m. Every customer-data destruction (DROP DATABASE / DROP USER / dropDatabase / ACL DELUSER / dedicated-pod teardown) the provisioner performs now routes through server.guardedDrop, which emits instant_provisioner_drop_total{resource_type,backend,outcome} and a structured `event=provisioner.drop` audit log line carrying token / provider_resource_id / resource_type / caller (gRPC peer addr) / request_id. The truehomie-db DROP incident (2026-06-03) was a BURST of un-attributed drops with NO audit trail; this alert pages on an abnormal drop rate so that class is caught in minutes instead of via a customer email. Triage: grep the instant-provisioner pod for `event=provisioner.drop` — the audit line names exactly what was dropped and who asked; cross-check the count against expected TTL-reaper + team-deletion volume. Source: provisioner/internal/server/drop_chokepoint.go (guardedDrop). Doc: docs/ci/DATA-INTEGRITY-DROP-PATH-AUDIT.md.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT rate(sum(instant_provisioner_drop_total), 1 second) FROM Metric WHERE metricName = 'instant_provisioner_drop_total' AND outcome = 'ok'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0.2,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 7200,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

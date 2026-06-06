@@ -1156,6 +1156,62 @@ spec:
               binding. Source: provisioner/internal/pool/manager.go
               (reportStuckAssigned).
 
+    # instant-provisioner — customer-data drop chokepoint audit (truehomie-db
+    # DROP incident, 2026-06-03). Every customer-data destruction the provisioner
+    # performs now routes through server.guardedDrop, which emits
+    # instant_provisioner_drop_total{resource_type,backend,outcome}. The incident
+    # signature was a BURST of un-attributed drops; this alert pages on an
+    # abnormal drop rate so the same class is caught in minutes, not via a
+    # customer email. Source: provisioner/internal/server/drop_chokepoint.go.
+    - name: instant-provisioner-drop-audit
+      rules:
+        - alert: ProvisionerDropRateAbnormal
+          # Baseline drop traffic is the TTL reaper + team-deletion + user DELETE.
+          # A sustained rate well above normal is the truehomie burst signature.
+          # Tune the threshold against observed steady-state once the metric has
+          # baseline history; 0.2/s (≈12/min) sustained 10m is the initial guard.
+          expr: |
+            sum(rate(instant_provisioner_drop_total{outcome="ok"}[10m])) > 0.2
+          for: 10m
+          labels:
+            severity: warning
+            service: provisioner
+          annotations:
+            summary: "provisioner customer-data drop rate abnormally high (>0.2/s for 10m) — possible mass-deprovision / incident-class burst"
+            description: |
+              sum(rate(instant_provisioner_drop_total{outcome="ok"}[10m])) > 0.2
+              sustained for 10m. The provisioner is dropping customer databases /
+              roles / caches / queues at a rate well above the steady-state
+              (TTL-reaper + team-deletion + user-DELETE). This is the alertable
+              signature of the truehomie-db DROP incident class (a burst of
+              un-expected destruction). IMMEDIATE triage: grep the
+              instant-provisioner pod logs for `event=provisioner.drop` — every
+              sanctioned drop now carries token / provider_resource_id /
+              resource_type / caller (gRPC peer) / request_id, so the audit line
+              names exactly what was dropped and who asked. Cross-check the count
+              against expected reaper/team-deletion volume; an un-attributed or
+              unexplained spike is an incident. Source:
+              provisioner/internal/server/drop_chokepoint.go (guardedDrop).
+        - alert: ProvisionerDropErrors
+          expr: |
+            sum(rate(instant_provisioner_drop_total{outcome="error"}[15m])) by (resource_type, backend) > 0
+          for: 30m
+          labels:
+            severity: warning
+            service: provisioner
+          annotations:
+            summary: "provisioner drop errors (resource_type={{ $labels.resource_type }} backend={{ $labels.backend }}) for 30m — infra leaking unreclaimed"
+            description: |
+              instant_provisioner_drop_total{outcome="error"} rate > 0 sustained
+              >30m. A backend Deprovision is failing through the chokepoint: the
+              customer-data destruction did not complete, so the backing infra
+              (DB / role / cache / queue) is leaking unreclaimed. A single blip
+              self-heals when the caller (TTL reaper / team-deletion) retries; a
+              sustained rate means a backend is wedged. Walk the resource_type /
+              backend labels to the targeted backend's /healthz and the
+              provisioner's circuit-breaker state. Source:
+              provisioner/internal/server/drop_chokepoint.go.
+
     # instant-worker — continuous-monitoring synthetic flow matrix (PR: flow
     # synthetic runner). The runner (worker/internal/jobs/flow_synthetic.go) runs
     # the P0 flow matrix (healthz / auth_me / provision→reap) against prod every
