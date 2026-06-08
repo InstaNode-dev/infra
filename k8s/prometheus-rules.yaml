@@ -981,6 +981,42 @@ spec:
               build pod logs in instant-deploy-* namespaces. Source:
               worker/internal/jobs/deploy_status_reconcile.go.
 
+    # instant-worker — runtime rollout-failure detector (2026-06-08). Twin of the
+    # build-Job detector above, for the RUNTIME side: the build SUCCEEDED but the
+    # produced image can't start (CreateContainerError "no command specified",
+    # ImagePullBackOff, CrashLoopBackOff). deploy_status_reconcile now maps a
+    # ProgressDeadlineExceeded rollout with no available replica to 'failed'
+    # (was 'deploying' forever). instant_deploy_runtime_failed_detected_total
+    # {reason} is emitted by worker/internal/jobs/deploy_status_reconcile.go.
+    - name: instant-worker-deploy-runtime-failed
+      rules:
+        - alert: DeployRuntimeFailedDetected
+          # Absolute count over a 30m window (same posture as DeployJobFailedDetected).
+          # A single broken-image deploy is per-customer and expected at a low rate;
+          # >= 3 in 30m means a PLATFORM build defect is producing unstartable images
+          # (e.g. empty 474-byte images with no CMD — the 2026-06-08 live symptom)
+          # or a registry/pull-secret regression. Matches
+          # newrelic/alerts/deploy-runtime-failed-detected.json.
+          expr: |
+            sum(increase(instant_deploy_runtime_failed_detected_total[30m])) >= 3
+          for: 5m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "deploys failing to start at runtime — >= 3 in 30m, likely a platform image defect"
+            description: |
+              sum(increase(instant_deploy_runtime_failed_detected_total[30m])) >= 3.
+              deploy_status_reconcile is flipping rollouts to 'failed' because they
+              exceeded their progress deadline with no available replica — the pods were
+              created but their containers can't start (broken built image: no
+              CMD/ENTRYPOINT, ImagePullBackOff, or CrashLoopBackOff). A platform-wide
+              spike means the build pipeline is producing unstartable images (check for
+              empty/near-zero-byte images in ghcr.io/.../instant-userapp/*) or a
+              registry/pull-secret regression. Per-customer this is a one-off bad image.
+              Source: worker/internal/jobs/deploy_status_reconcile.go (counter
+              DeployRuntimeFailedDetectedTotal); user-facing reason=StartFailed.
+
     # instant-worker — scale-to-zero idle-scaler (Task #54).
     # instant_deploy_scaled_to_zero_total{outcome} is emitted by
     # worker/internal/jobs/deploy_idle_scaler.go. INERT until an operator sets

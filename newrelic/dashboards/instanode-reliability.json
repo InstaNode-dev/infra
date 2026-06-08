@@ -926,6 +926,62 @@
           }
         },
         {
+          "title": "Deploy runtime start-failures (1h, detected; must be 0 in steady state)",
+          "layout": {
+            "column": 1,
+            "row": 78,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT derivative(instant_deploy_runtime_failed_detected_total, 1 hour) AS 'runtime start-failures (1h)' FROM Metric WHERE service = 'worker' SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
+            "thresholds": [
+              {
+                "alertSeverity": "WARNING",
+                "value": 1
+              }
+            ]
+          }
+        },
+        {
+          "title": "Deploy runtime start-failures by reason (6h)",
+          "layout": {
+            "column": 4,
+            "row": 78,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.stacked-bar"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT rate(sum(instant_deploy_runtime_failed_detected_total), 1 minute) FROM Metric WHERE service = 'worker' FACET reason TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
           "title": "Billing reconciler gap detected by direction (6h)",
           "layout": {
             "column": 7,

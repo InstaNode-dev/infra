@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — deploy runtime start-failures detected (30m) [silent-deploy-failure backstop]",
+  "type": "NRQL",
+  "description": "Fires when deploy_status_reconcile flips rollouts to 'failed' because they exceeded their progress deadline with no available replica — the RUNTIME twin of deploy-job-failed-detected.json (CLAUDE.md rule 27). The build SUCCEEDED but the produced image can't start: CreateContainerError ('no command specified' from an empty/near-zero-byte image), ImagePullBackOff, or CrashLoopBackOff. Before the 2026-06-08 fix these deploys reported 'deploying' forever (deploymentStatusFromK8s only checked DeploymentReplicaFailure + replica counts), so no autopsy ran and the user got no failure email; now a Progressing=False/ProgressDeadlineExceeded rollout maps to 'failed' (user-facing reason=StartFailed). Per-customer this is a one-off bad image (low rate, expected). A platform-wide spike means the build pipeline is producing unstartable images (the 2026-06-08 live symptom was 6 deploys at once pulling 474-byte empty images) or a registry/pull-secret regression. P1: user-visible, recoverable. The query is derivative(...,30 minutes) per reason (NR ingests the counter as a cumulative monotonic OTLP sum). ABOVE_OR_EQUALS 3 over a 30m window pages on a small cluster of runtime start-failures while tolerating one or two individual bad images. Source: worker/internal/jobs/deploy_status_reconcile.go; counter DeployRuntimeFailedDetectedTotal in worker/internal/metrics/metrics.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT derivative(instant_deploy_runtime_failed_detected_total, 30 minutes) FROM Metric WHERE service = 'worker' FACET reason"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE_OR_EQUALS",
+      "threshold": 3,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 180,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
