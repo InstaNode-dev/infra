@@ -345,6 +345,39 @@ spec:
               are fine; a sustained rate means the reap path itself is broken. Check
               instant-worker pod logs for `jobs.orphan_sweep.*_delete_failed` lines.
 
+    # instant-worker — audit-only orphan-DB / redis-namespace sweep (2026-06-09).
+    # DISTINCT from the namespace orphan_sweep above: orphan_db_sweep (worker
+    # internal/jobs/orphan_db_sweep.go) is a DETECTION/DRY-RUN surface for the
+    # ~25-orphan customer-DB drain backlog. Flag-gated OFF (ORPHAN_DB_SWEEP_ENABLED);
+    # when on it only LOGS + counts candidates (no drop — the destructive arm is a
+    # SECOND flag that routes through the audited provisioner chokepoint, never a raw
+    # DROP; truehomie safety). The gauge stays 0 while the flag is off. These alerts
+    # surface the backlog so an operator reviews the candidate list before any
+    # destructive enablement. Metrics: instant_orphan_db_sweep_candidates_{total,current}{kind}.
+    - name: instant-worker-orphan-db-sweep
+      rules:
+        - alert: OrphanDBSweepBacklog
+          # Sustained backlog → orphaned customer DBs / instant-customer-* redis
+          # namespaces (no active resource row) accumulating faster than they drain.
+          # P2 capacity hygiene, not an outage. Only fires once the sweep flag is on
+          # (gauge is 0 when off). kind ∈ {customer_namespace, redis_namespace}.
+          expr: |
+            max(instant_orphan_db_sweep_candidates_current) by (kind) > 25
+          for: 1h
+          labels:
+            severity: warning
+            service: worker
+          annotations:
+            summary: "orphan-DB sweep backlog > 25 (kind={{ $labels.kind }}) — review candidates before destructive enablement"
+            description: |
+              instant_orphan_db_sweep_candidates_current{kind="{{ $labels.kind }}"} > 25 for >1h.
+              The audit-only orphan_db_sweep is detecting orphaned customer DBs / instant-customer-*
+              redis namespaces faster than they drain — the drain backlog the sweep was built to
+              surface. Review the candidate list in NR Logs (jobs.orphan_db_sweep.candidate); once
+              verified, an operator may enable the AUDITED destructive arm
+              (ORPHAN_DB_SWEEP_DESTRUCTIVE_ENABLED), which reclaims via the provisioner chokepoint.
+              NEVER drop a customer DB manually (truehomie incident, 2026-06-03).
+
     # instant-* — code-defect signals (BugBash 2026-05-20).
     # Both counters are incremented by the safego.Go wrapper's deferred
     # recover() when a panic would otherwise crash a background goroutine.
