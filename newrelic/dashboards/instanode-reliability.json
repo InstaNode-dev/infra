@@ -982,6 +982,31 @@
           }
         },
         {
+          "title": "Orphan-DB sweep — current candidate backlog by kind (0 until enabled)",
+          "layout": {
+            "column": 1,
+            "row": 81,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT latest(instant_orphan_db_sweep_candidates_current) FROM Metric WHERE service = 'worker' FACET kind TIMESERIES SINCE 6 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
           "title": "Billing reconciler gap detected by direction (6h)",
           "layout": {
             "column": 7,
