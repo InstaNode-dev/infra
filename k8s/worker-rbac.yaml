@@ -47,15 +47,46 @@ subjects:
     namespace: instant-infra
 
 ---
-# ClusterRole granting the worker permission to read Deployment objects across
-# all "instant-deploy-*" namespaces. Used by DeployStatusReconciler (see
-# worker/internal/jobs/deploy_status_reconcile.go) to reconcile the
-# deployments.status DB column from live k8s state every 30s.
+# ClusterRole granting the worker the read-only k8s access needed to reconcile
+# deployment status AND capture failure autopsies across all "instant-deploy-*"
+# (and "instant-stack-*") namespaces. Used by DeployStatusReconciler +
+# the deploy-failure autopsy client, both wired into the same River worker via
+# WithAutopsyK8s (see worker/internal/jobs/deploy_status_reconcile.go and
+# worker/internal/jobs/deploy_failure_autopsy.go).
 #
 # This is intentionally cluster-scoped because per-app namespaces are created
 # on demand by the api process — we can't enumerate them at RBAC-bind time.
-# Read-only get on deployments.apps is the tightest verb set that makes the
-# reconciler work; the worker has no need to list/watch/patch and gets none.
+#
+# Every verb below maps to exactly one live k8s call; nothing is over-granted
+# (no create/delete/patch/watch — the worker only reads):
+#
+#   apps/deployments       get   ← deploy_status_reconcile.go:251
+#                                   AppsV1().Deployments(ns).Get(...)  — roll the
+#                                   deployments.status DB column forward every 30s.
+#
+#   batch/jobs             get   ← deploy_status_reconcile.go:256
+#                                   BatchV1().Jobs(ns).Get(...)  — detect a Failed
+#                                   Kaniko build Job (BackoffLimitExceeded /
+#                                   DeadlineExceeded) so the row flips to `failed`
+#                                   even when the build pod is GC'd before the
+#                                   runtime Deployment exists. THIS is the grant
+#                                   whose absence disabled CLAUDE.md rule-27
+#                                   silent-build-failure detection in prod
+#                                   (worker logged job_query_failed every tick).
+#
+#   pods                   list  ← deploy_failure_autopsy.go:208
+#                                   CoreV1().Pods(ns).List(...)  — find the failed
+#                                   build/runtime pods by label selector.
+#
+#   pods/log               get   ← deploy_failure_autopsy.go:220,230
+#                                   CoreV1().Pods(ns).GetLogs(...)  — capture the
+#                                   last_lines of build-pod logs for the autopsy
+#                                   row + the deploy.failed audit_log / email.
+#
+#   events                 list  ← deploy_failure_autopsy.go:215
+#                                   CoreV1().Events(ns).List(...)  — read k8s
+#                                   Events (ImagePullBackOff, FailedScheduling, …)
+#                                   to enrich the autopsy reason/hint.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -64,6 +95,18 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
 
 ---
 # Bind the deploy-reader ClusterRole to the instant-worker ServiceAccount.
