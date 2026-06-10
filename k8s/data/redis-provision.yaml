@@ -44,6 +44,19 @@ spec:
             - "yes"
             - --dir
             - /data
+          # R7 (2026-06-10): requests added so this pod is Burstable, not
+          # BestEffort — BestEffort is the FIRST thing evicted under the
+          # cluster's memory overcommit. request 128Mi covers idle + small
+          # working set; limit 384Mi gives headroom over the --maxmemory 256mb
+          # cap (Redis RSS runs above the dataset due to fragmentation + COW on
+          # AOF rewrite). cpu request is a floor only (Redis is single-threaded;
+          # no cpu limit to avoid throttling latency-sensitive ops).
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "384Mi"
           volumeMounts:
             - name: redis-data
               mountPath: /data

@@ -982,7 +982,7 @@
           }
         },
         {
-          "title": "Orphan-DB sweep — current candidate backlog by kind (0 until enabled)",
+          "title": "Orphan-DB sweep \u2014 current candidate backlog by kind (0 until enabled)",
           "layout": {
             "column": 1,
             "row": 81,
@@ -1519,7 +1519,7 @@
           }
         },
         {
-          "title": "Layer-3 payment prober — outcomes per leg (6h) [money heartbeat]",
+          "title": "Layer-3 payment prober \u2014 outcomes per leg (6h) [money heartbeat]",
           "layout": {
             "column": 1,
             "row": 75,
@@ -1544,7 +1544,7 @@
           }
         },
         {
-          "title": "Layer-3 payment prober — fails (last 6h, must be 0; degraded excluded)",
+          "title": "Layer-3 payment prober \u2014 fails (last 6h, must be 0; degraded excluded)",
           "layout": {
             "column": 7,
             "row": 75,
@@ -1575,7 +1575,7 @@
           }
         },
         {
-          "title": "Layer-3 payment prober — P95 latency per leg (6h)",
+          "title": "Layer-3 payment prober \u2014 P95 latency per leg (6h)",
           "layout": {
             "column": 10,
             "row": 75,
@@ -1597,6 +1597,37 @@
             "platformOptions": {
               "ignoreTimeRange": false
             }
+          }
+        },
+        {
+          "title": "Razorpay webhook \u2014 signature failures (1h, must be 0 in steady state) [S4]",
+          "layout": {
+            "column": 1,
+            "row": 84,
+            "width": 3,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT sum(instant_razorpay_webhook_sig_fail_total) AS 'sig_fail' FROM Metric WHERE metricName = 'instant_razorpay_webhook_sig_fail_total' SINCE 1 hour ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            },
+            "thresholds": [
+              {
+                "alertSeverity": "WARNING",
+                "value": 1
+              }
+            ]
           }
         }
       ]

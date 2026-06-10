@@ -1,0 +1,31 @@
+{
+  "name": "instant-api — razorpay_webhook_sig_fail elevated [forged billing webhook or RAZORPAY_WEBHOOK_SECRET mismatch]",
+  "type": "NRQL",
+  "description": "P2/abuse. Fires when instant_razorpay_webhook_sig_fail_total rate is elevated over ~10m. A non-zero signature-failure count on POST /razorpay/webhook means one of: (a) an attacker is probing the billing webhook endpoint with a forged payload trying to drive a free plan upgrade (a correctly-shaped subscription.charged with a bad signature is the highest-value forgery on the platform — the signature gate is the ONLY thing standing between a forged success and a free Pro/Team upgrade), (b) RAZORPAY_WEBHOOK_SECRET in instant-secrets has drifted from the secret configured in the Razorpay dashboard (the modal cause after a secret rotation on one side only — Razorpay will then retry every real webhook and each retry fails the signature check), or (c) a misconfigured test/live secret split (the handler tries the live RAZORPAY_WEBHOOK_SECRET first, then RAZORPAY_TEST_WEBHOOK_SECRET — a TEST-mode payload against a prod with no test secret set fails both). Razorpay signatures are hex(HMAC-SHA256(key=webhookSecret, msg=rawBody)) with NO timestamp prefix (unlike Stripe); the handler constant-time-compares in verifyRazorpaySignature. Cross-correlate against NR Logs for api service message='billing.webhook.signature_failed' (carries event_id + client IP) and the audit_log row. If the rate tracks with a single IP and a well-formed-but-unsigned subscription.charged payload, treat as an ACTIVE upgrade-forgery attempt — do NOT rotate blindly (rotation won't stop a forger, it only fixes a legit-secret drift); confirm the customer's plan_tier did NOT flip (it cannot — the 400 short-circuits before the handler dispatches) and capture the source IP for a WAF block. If the rate tracks with legitimate Razorpay delivery retries and no IP anomaly, treat as secret mismatch: re-sync RAZORPAY_WEBHOOK_SECRET in instant-secrets AND the Razorpay dashboard. Source: api/internal/handlers/billing.go (verifyRazorpaySignature → invalid_signature 400); counter registered as instant_razorpay_webhook_sig_fail_total. Lazy counter — the series only appears at /metrics after the first failed verification. Mirrors the GitHub-webhook bad-signature alert (newrelic/alerts/github-webhook-bad-signature.json) and the Prom rule RazorpayWebhookSigFailSpike in k8s/prometheus-rules.yaml group instant-billing.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT sum(instant_razorpay_webhook_sig_fail_total) FROM Metric WHERE metricName = 'instant_razorpay_webhook_sig_fail_total'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 60,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
