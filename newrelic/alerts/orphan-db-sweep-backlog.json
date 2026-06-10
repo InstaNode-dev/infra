@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — orphan-DB sweep backlog > 25 (1h) [drain-backlog hygiene]",
+  "type": "NRQL",
+  "description": "Fires when the audit-only orphan_db_sweep (worker/internal/jobs/orphan_db_sweep.go) reports a sustained backlog of orphaned customer DBs / instant-customer-* redis namespaces (no active resource row). This is a DETECTION/DRY-RUN surface for the ~25-orphan drain backlog — flag-gated OFF (ORPHAN_DB_SWEEP_ENABLED), so the gauge stays 0 until an operator enables it; once on, this alert surfaces the backlog so the candidate list can be reviewed BEFORE any destructive enablement. The destructive arm is a separate flag (ORPHAN_DB_SWEEP_DESTRUCTIVE_ENABLED) that reclaims ONLY via the audited provisioner DeprovisionResource chokepoint — never a raw DROP (truehomie incident, 2026-06-03). P2: capacity hygiene, not an outage. kind in {customer_namespace, redis_namespace}. Source counter/gauge: OrphanDBSweepCandidatesTotal / OrphanDBSweepCandidatesCurrent in worker/internal/metrics/metrics.go.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT max(instant_orphan_db_sweep_candidates_current) FROM Metric WHERE service = 'worker' FACET kind"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 25,
+      "thresholdDuration": 3600,
+      "thresholdOccurrences": "ALL"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 180,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

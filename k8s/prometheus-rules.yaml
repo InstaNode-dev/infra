@@ -345,6 +345,39 @@ spec:
               are fine; a sustained rate means the reap path itself is broken. Check
               instant-worker pod logs for `jobs.orphan_sweep.*_delete_failed` lines.
 
+    # instant-worker — audit-only orphan-DB / redis-namespace sweep (2026-06-09).
+    # DISTINCT from the namespace orphan_sweep above: orphan_db_sweep (worker
+    # internal/jobs/orphan_db_sweep.go) is a DETECTION/DRY-RUN surface for the
+    # ~25-orphan customer-DB drain backlog. Flag-gated OFF (ORPHAN_DB_SWEEP_ENABLED);
+    # when on it only LOGS + counts candidates (no drop — the destructive arm is a
+    # SECOND flag that routes through the audited provisioner chokepoint, never a raw
+    # DROP; truehomie safety). The gauge stays 0 while the flag is off. These alerts
+    # surface the backlog so an operator reviews the candidate list before any
+    # destructive enablement. Metrics: instant_orphan_db_sweep_candidates_{total,current}{kind}.
+    - name: instant-worker-orphan-db-sweep
+      rules:
+        - alert: OrphanDBSweepBacklog
+          # Sustained backlog → orphaned customer DBs / instant-customer-* redis
+          # namespaces (no active resource row) accumulating faster than they drain.
+          # P2 capacity hygiene, not an outage. Only fires once the sweep flag is on
+          # (gauge is 0 when off). kind ∈ {customer_namespace, redis_namespace}.
+          expr: |
+            max(instant_orphan_db_sweep_candidates_current) by (kind) > 25
+          for: 1h
+          labels:
+            severity: warning
+            service: worker
+          annotations:
+            summary: "orphan-DB sweep backlog > 25 (kind={{ $labels.kind }}) — review candidates before destructive enablement"
+            description: |
+              instant_orphan_db_sweep_candidates_current{kind="{{ $labels.kind }}"} > 25 for >1h.
+              The audit-only orphan_db_sweep is detecting orphaned customer DBs / instant-customer-*
+              redis namespaces faster than they drain — the drain backlog the sweep was built to
+              surface. Review the candidate list in NR Logs (jobs.orphan_db_sweep.candidate); once
+              verified, an operator may enable the AUDITED destructive arm
+              (ORPHAN_DB_SWEEP_DESTRUCTIVE_ENABLED), which reclaims via the provisioner chokepoint.
+              NEVER drop a customer DB manually (truehomie incident, 2026-06-03).
+
     # instant-* — code-defect signals (BugBash 2026-05-20).
     # Both counters are incremented by the safego.Go wrapper's deferred
     # recover() when a panic would otherwise crash a background goroutine.
@@ -902,6 +935,59 @@ spec:
               handlers/github_webhook.go push handler → deploy enqueue path.
               NR mirror: newrelic/alerts/github-pushdeploy-error.json.
 
+    # Razorpay inbound billing webhook signature gate (S4, 2026-06-10).
+    # Metric emitted by api/internal/handlers/billing.go on a failed
+    # HMAC-SHA256 verify of POST /razorpay/webhook (the 400 invalid_signature
+    # path):
+    #   instant_razorpay_webhook_sig_fail_total
+    # Lazy Counter — the series only materialises on the first failed verify.
+    # Mirror of newrelic/alerts/razorpay-webhook-sig-fail.json (P2). Pairs the
+    # GitHub-webhook bad-signature alert above; same abuse class, higher blast
+    # radius (the signature gate is the only thing between a forged
+    # subscription.charged and a free plan upgrade).
+    - name: instant-billing
+      rules:
+        # Razorpay webhook signature-failure spike — forged billing payload or
+        # RAZORPAY_WEBHOOK_SECRET mismatch.
+        # P2/abuse: WARNING only. Non-zero is common on secret rotations that
+        # update one side (Razorpay dashboard vs instant-secrets) before the
+        # other — every legit retry then fails the gate. A sustained rate from
+        # a single IP carrying a well-formed-but-unsigned subscription.charged
+        # is an active upgrade-forgery attempt (the highest-value forgery on
+        # the platform). The 400 short-circuits BEFORE dispatch, so no plan_tier
+        # can flip — this alert is about visibility + WAF/source-block response,
+        # not damage already done.
+        - alert: RazorpayWebhookSigFailSpike
+          expr: |
+            increase(instant_razorpay_webhook_sig_fail_total[10m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: api
+          annotations:
+            summary: "Razorpay webhook signature failures > 0 in 10m — forged billing webhook or RAZORPAY_WEBHOOK_SECRET mismatch"
+            description: |
+              instant_razorpay_webhook_sig_fail_total > 0 for >10m. A POST to
+              /razorpay/webhook failed HMAC-SHA256 signature verification. Either
+              (a) an attacker is probing the billing webhook with a forged payload
+              (a correctly-shaped subscription.charged with a bad signature is the
+              highest-value forgery here — the gate is the only thing between it and
+              a free Pro/Team upgrade), or (b) RAZORPAY_WEBHOOK_SECRET in
+              instant-secrets drifted from the Razorpay dashboard (modal cause:
+              secret rotated on one side only → every legit retry fails), or (c) a
+              live/test secret split (handler tries RAZORPAY_WEBHOOK_SECRET then
+              RAZORPAY_TEST_WEBHOOK_SECRET; a TEST payload against a prod with no
+              test secret fails both). The 400 short-circuits BEFORE dispatch, so
+              no plan_tier flips. Investigate: grep NR Logs api
+              message='billing.webhook.signature_failed' for event_id + client IP.
+              If single-IP with a well-formed subscription.charged: ACTIVE forgery —
+              capture the IP for a WAF/source block; do NOT rotate blindly (rotation
+              fixes drift, not forgers). If legitimate Razorpay delivery retries with
+              no IP anomaly: secret mismatch — re-sync RAZORPAY_WEBHOOK_SECRET in
+              instant-secrets AND the Razorpay dashboard. Source: api/internal/
+              handlers/billing.go (verifyRazorpaySignature → invalid_signature 400).
+              NR mirror: newrelic/alerts/razorpay-webhook-sig-fail.json.
+
     # instant-worker — entitlement drift outpacing regrade (Rule 25 sweep 2026-06-04).
     # The entitlement_reconciler DETECTS Postgres resources whose connection cap no
     # longer matches their team's plan tier (instant_entitlement_drift_detected_total)
@@ -980,6 +1066,42 @@ spec:
               incident. Check ghcr.io status, the deploy.yml CI push step, and Kaniko
               build pod logs in instant-deploy-* namespaces. Source:
               worker/internal/jobs/deploy_status_reconcile.go.
+
+    # instant-worker — runtime rollout-failure detector (2026-06-08). Twin of the
+    # build-Job detector above, for the RUNTIME side: the build SUCCEEDED but the
+    # produced image can't start (CreateContainerError "no command specified",
+    # ImagePullBackOff, CrashLoopBackOff). deploy_status_reconcile now maps a
+    # ProgressDeadlineExceeded rollout with no available replica to 'failed'
+    # (was 'deploying' forever). instant_deploy_runtime_failed_detected_total
+    # {reason} is emitted by worker/internal/jobs/deploy_status_reconcile.go.
+    - name: instant-worker-deploy-runtime-failed
+      rules:
+        - alert: DeployRuntimeFailedDetected
+          # Absolute count over a 30m window (same posture as DeployJobFailedDetected).
+          # A single broken-image deploy is per-customer and expected at a low rate;
+          # >= 3 in 30m means a PLATFORM build defect is producing unstartable images
+          # (e.g. empty 474-byte images with no CMD — the 2026-06-08 live symptom)
+          # or a registry/pull-secret regression. Matches
+          # newrelic/alerts/deploy-runtime-failed-detected.json.
+          expr: |
+            sum(increase(instant_deploy_runtime_failed_detected_total[30m])) >= 3
+          for: 5m
+          labels:
+            severity: critical
+            service: worker
+          annotations:
+            summary: "deploys failing to start at runtime — >= 3 in 30m, likely a platform image defect"
+            description: |
+              sum(increase(instant_deploy_runtime_failed_detected_total[30m])) >= 3.
+              deploy_status_reconcile is flipping rollouts to 'failed' because they
+              exceeded their progress deadline with no available replica — the pods were
+              created but their containers can't start (broken built image: no
+              CMD/ENTRYPOINT, ImagePullBackOff, or CrashLoopBackOff). A platform-wide
+              spike means the build pipeline is producing unstartable images (check for
+              empty/near-zero-byte images in ghcr.io/.../instant-userapp/*) or a
+              registry/pull-secret regression. Per-customer this is a one-off bad image.
+              Source: worker/internal/jobs/deploy_status_reconcile.go (counter
+              DeployRuntimeFailedDetectedTotal); user-facing reason=StartFailed.
 
     # instant-worker — scale-to-zero idle-scaler (Task #54).
     # instant_deploy_scaled_to_zero_total{outcome} is emitted by

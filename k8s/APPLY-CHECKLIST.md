@@ -14,6 +14,12 @@ This checklist applies to:
 Per CLAUDE.md rule 15: **this repo has no auto-apply by design.** Manifest
 apply is a deliberate, human-driven step.
 
+> **Stateful data-tier manifests** (`k8s/data/*` — postgres-customers,
+> mongodb, redis-provision, nats: PVCs, NetworkPolicy, pg_hba lockdown,
+> PriorityClass/PDBs) have their own apply order + verification gates in
+> **`k8s/DATA-TIER-APPLY-RUNBOOK.md`**. Use that for S1/S2/R6/R7. This file
+> is for the api/worker/provisioner Deployment manifests only.
+
 ---
 
 ## Hard rules
