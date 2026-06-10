@@ -32,6 +32,17 @@ spec:
           image: mongo:7
           ports:
             - containerPort: 27017
+          # R7 (2026-06-10): requests added so this pod is Burstable, not
+          # BestEffort (BestEffort = first evicted under the cluster's memory
+          # overcommit). WiredTiger sizes its cache to 50% of (RAM - 1GB) by
+          # default; the 1Gi limit keeps that bounded for the free-tier nosql
+          # footprint. Bump both if dedicated/Team mongodb lands here.
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
           env:
             - name: MONGO_INITDB_ROOT_USERNAME
               value: root

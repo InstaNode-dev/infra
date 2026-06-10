@@ -50,6 +50,21 @@ spec:
             - "password_encryption=scram-sha-256"
           ports:
             - containerPort: 5432
+          # R7 (2026-06-10): requests added so this pod is Burstable, not
+          # BestEffort. postgres-customers holds EVERY customer db_<token> —
+          # evicting it first under memory pressure (BestEffort QoS) is the
+          # worst possible eviction order. request 256Mi covers shared_buffers
+          # + idle backends for the free-tier footprint; limit 1Gi bounds it
+          # while leaving room for connection-heavy load. Pair with the
+          # instant-data-critical PriorityClass (applied via
+          # DATA-TIER-APPLY-RUNBOOK.md) so it is also scheduled ahead of and
+          # preempted after stateless app pods.
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
           env:
             - name: POSTGRES_DB
               value: instant_customers

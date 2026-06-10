@@ -1,0 +1,142 @@
+---
+# Stateful data-tier eviction protection (R7, 2026-06-10).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY THIS EXISTS
+# ─────────────────────────────────────────────────────────────────────────────
+# The instant-data namespace holds the platform's stateful workloads —
+# postgres-customers (every customer db_<token>), mongodb (nosql resources),
+# redis-provision (cache resources), and nats (JetStream queues). These are
+# single-replica, PVC-backed, and CANNOT be casually rescheduled: an eviction
+# is a customer-visible outage (postgres-customers Recreate downtime) or, for
+# emptyDir-era nats, data loss.
+#
+# The cluster runs at 200%+ memory OVERCOMMIT (sum of limits >> node
+# allocatable). Under node memory pressure the kubelet evicts pods in this
+# order: (1) BestEffort (no requests/limits) first, then (2) Burstable using
+# MORE than their request, then by Priority ASCENDING. Two failure modes today:
+#   1. mongodb / redis-provision / postgres-customers declare NO resource
+#      requests → BestEffort QoS → FIRST evicted under pressure, ahead of any
+#      stateless app pod. The data tier should be the LAST thing evicted, not
+#      the first. (Right-sized requests land in their own manifests — see
+#      k8s/data/{mongodb,redis-provision,postgres-customers}.yaml.)
+#   2. No PriorityClass → these pods sit at the default priority (0), tied with
+#      every throwaway build/preview pod. A high PriorityClass makes the
+#      scheduler evict lower-priority stateless pods to make room for the data
+#      tier, and protects the data tier from preemption.
+#
+# This file ships the eviction-protection PRIMITIVES (PriorityClass + one PDB
+# per stateful workload). The matching resource requests live in each
+# workload's own manifest so the QoS change is reviewable alongside the
+# workload it sizes.
+#
+# minio is intentionally NOT covered: the self-hosted MinIO Deployment was
+# retired 2026-05-20 (DO Spaces is the canonical object store — see
+# APPLY-CHECKLIST.md §"MinIO retirement"). There is no minio workload in
+# instant-data to protect. If a local-dev minio is ever re-introduced, add its
+# PDB here.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PriorityClass
+# ─────────────────────────────────────────────────────────────────────────────
+# Cluster-scoped (PriorityClass is not namespaced). value 1_000_000 sits ABOVE
+# the default (0) and above typical app workloads, but BELOW the reserved
+# system-node-critical (2000000000) / system-cluster-critical (2000000000)
+# bands so we never starve kube-system. preemptionPolicy PreemptLowerPriority
+# (the default) lets the scheduler evict lower-priority stateless pods to
+# schedule a data-tier pod that would otherwise go Pending — exactly what we
+# want when a node is tight. globalDefault MUST stay false (true would silently
+# give EVERY unclassified pod this priority and defeat the point).
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: instant-data-critical
+value: 1000000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: >-
+  Stateful data-tier workloads in instant-data (postgres-customers, mongodb,
+  redis-provision, nats). High priority so they are scheduled ahead of and
+  evicted after stateless app pods under the cluster's memory overcommit.
+  Apply the priorityClassName to each workload's pod template via the operator
+  patch in DATA-TIER-APPLY-RUNBOOK.md (kept out of the Deployment manifests
+  there so the priority rollout is a single auditable step).
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# PodDisruptionBudgets — minAvailable: 1 per stateful workload.
+# ─────────────────────────────────────────────────────────────────────────────
+# A PDB with minAvailable: 1 blocks VOLUNTARY disruptions (node drain /
+# `kubectl drain`, cluster autoscaler scale-down, a rolling node upgrade) from
+# evicting the single replica until a replacement is Ready. It does NOT stop
+# INVOLUNTARY eviction (OOM kill, node hardware failure, kubelet
+# memory-pressure eviction) — that is what the PriorityClass + resource
+# requests above defend against. The two mechanisms are complementary:
+# PriorityClass/requests = involuntary eviction ordering; PDB = voluntary
+# disruption gate.
+#
+# CAVEAT for single-replica workloads: minAvailable: 1 on a 1-replica
+# Deployment means a node drain will BLOCK until the pod is rescheduled and
+# Ready elsewhere. For PVC-backed RWO workloads (all four here) the volume must
+# detach from the draining node and re-attach on the new node first, so a drain
+# is NOT instantaneous — it is correctly gated, not deadlocked, as long as the
+# replacement node can attach the volume. This is the intended behaviour: a
+# drain that would take customer Postgres offline now waits for a healthy
+# replacement instead of yanking it. Operators draining a node for maintenance
+# should expect the drain to pause here and complete once the data pod is
+# Ready on the new node (or use --disable-eviction only as a deliberate,
+# logged override).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgres-customers-pdb
+  namespace: instant-data
+  labels:
+    app: postgres-customers
+    app.kubernetes.io/component: data
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: postgres-customers
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mongodb-pdb
+  namespace: instant-data
+  labels:
+    app: mongodb
+    app.kubernetes.io/component: data
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mongodb
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-provision-pdb
+  namespace: instant-data
+  labels:
+    app: redis-provision
+    app.kubernetes.io/component: data
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: redis-provision
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nats-pdb
+  namespace: instant-data
+  labels:
+    app: nats
+    app.kubernetes.io/component: data
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: nats

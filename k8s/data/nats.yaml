@@ -72,6 +72,43 @@ data:
     resolver: MEMORY
 
 ---
+# JetStream durability (R6, 2026-06-10). Before this PVC, the JetStream
+# store_dir (/data/jetstream) was an emptyDir{} — every pod restart (the
+# Recreate rollout, an OOMKill, or a node drain) WIPED all stream + consumer
+# state and every persisted message. For a queue product that promises
+# "queue data survives pod restarts" that is a durability lie. This PVC backs
+# /data/jetstream with real block storage so stream/consumer state + messages
+# persist across restarts.
+#
+# 5Gi is conservative — sized to the JetStream config's max_file_store: 50GB
+# CEILING, not its current footprint; today's queue volume is tiny. Grow with
+# `kubectl edit pvc nats-jetstream-pvc` (do-block-storage / EBS support online
+# expansion when allowVolumeExpansion=true on the StorageClass) if file_store
+# usage approaches the request. Do NOT pre-allocate 50Gi — that is the hard
+# ceiling, not the working set.
+#
+# storageClassName is OMITTED → falls back to the cluster default. On DOKS prod
+# that default is `do-block-storage` (confirmed in k8s/self-hosted-runner.yaml
+# :152 + k8s/data/postgres-customers.yaml, which use the same omit-for-default
+# convention). Local dev (Rancher Desktop / k3s) gets `local-path` via the
+# cluster default there, or layer a kustomize overlay setting
+# storageClassName: local-path. Block storage is RWO single-attach, which is
+# why the Deployment below MUST stay strategy.type: Recreate (a RollingUpdate
+# would Multi-Attach-deadlock the new pod against the old holder — same
+# constraint postgres-customers.yaml documents).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nats-jetstream-pvc
+  namespace: instant-data
+  labels:
+    app: nats
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -172,9 +209,15 @@ spec:
           # Secret + restart. Once the Secret exists the pod converges.
           optional: false
       - name: rendered-conf
-        emptyDir: {}
+        emptyDir: {}   # render scratch only — operator.conf is re-rendered
+                       # from the nats-operator Secret by the initContainer on
+                       # every pod start, so this one stays ephemeral by design.
       - name: jetstream-data
-        emptyDir: {}   # TODO: convert to PVC for prod durability
+        # R6 (2026-06-10): was emptyDir{} — now PVC-backed so JetStream
+        # stream/consumer state + persisted messages survive pod restarts.
+        # See the nats-jetstream-pvc PersistentVolumeClaim above.
+        persistentVolumeClaim:
+          claimName: nats-jetstream-pvc
 ---
 apiVersion: v1
 kind: Service
