@@ -254,6 +254,64 @@ doesn't work for wildcards). The runbook has the verification commands.
 
 ---
 
+## Worker deploy-status RBAC — jobs/pods/events read grant (2026-06-11)
+
+`k8s/worker-rbac.yaml`'s `instant-worker-deploy-reader` ClusterRole was
+extended to grant the worker SA (`instant-worker` in `instant-infra`) the
+read-only k8s access its deploy-status reconciler + failure-autopsy path
+actually need. Before this, the SA could only `get apps/deployments`, so
+the rule-27 silent-build-failure detector logged
+`jobs.deploy_status_reconcile.job_query_failed … cannot get resource
+"jobs" in API group "batch"` every ~30s and that whole detection path was
+**disabled in prod**.
+
+The added verbs map 1:1 to live k8s calls (no over-grant — read-only, no
+create/delete/patch/watch):
+
+| apiGroup / resource | verb | worker call (file:line) |
+|---|---|---|
+| `batch` / `jobs`     | `get`  | `deploy_status_reconcile.go:256` `BatchV1().Jobs(ns).Get` |
+| `""` / `pods`        | `list` | `deploy_failure_autopsy.go:208` `CoreV1().Pods(ns).List` |
+| `""` / `pods/log`    | `get`  | `deploy_failure_autopsy.go:220,230` `CoreV1().Pods(ns).GetLogs` |
+| `""` / `events`      | `list` | `deploy_failure_autopsy.go:215` `CoreV1().Events(ns).List` |
+
+(`apps/deployments get` was already granted and is unchanged.)
+
+This is an RBAC-only change — no Deployment, no secrets, no image tag. It
+is safe to `kubectl apply` directly (none of the app.yaml clobber hazards
+above apply to a ClusterRole/ClusterRoleBinding/ServiceAccount file).
+
+```bash
+# 1. Confirm context
+kubectl config current-context        # expect do-nyc3-instant-prod
+
+# 2. Dry-run server-side and read the diff (RBAC verbs only should change)
+kubectl apply --dry-run=server -f k8s/worker-rbac.yaml
+
+# 3. Apply
+kubectl apply -f k8s/worker-rbac.yaml
+
+# 4. Verify the SA can now reach jobs/pods/events in a deploy namespace.
+#    (Use any live instant-deploy-* ns; RBAC is cluster-scoped so the
+#    namespace just has to exist. All four must print "yes".)
+NS=$(kubectl get ns -o name | grep -m1 'instant-deploy-' | cut -d/ -f2)
+kubectl auth can-i get  jobs.batch  --as=system:serviceaccount:instant-infra:instant-worker -n "$NS"
+kubectl auth can-i list pods        --as=system:serviceaccount:instant-infra:instant-worker -n "$NS"
+kubectl auth can-i get  pods/log    --as=system:serviceaccount:instant-infra:instant-worker -n "$NS"
+kubectl auth can-i list events      --as=system:serviceaccount:instant-infra:instant-worker -n "$NS"
+
+# 5. Confirm the error stops within one reconcile tick (~30s). This should
+#    print nothing after the apply:
+kubectl logs -n instant-infra deploy/instant-worker --since=2m \
+  | grep -i 'job_query_failed' || echo "ok — no job_query_failed in last 2m"
+```
+
+Rollback: `git revert` the merge commit and re-apply — the verbs are
+purely additive, so reverting only narrows the grant back to
+`apps/deployments get` (re-disables rule-27 detection, no other effect).
+
+---
+
 ## Related files
 
 - `README.md` — secrets clobber warning (the same class of bug, but for

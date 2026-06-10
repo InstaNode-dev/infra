@@ -93,7 +93,7 @@ assert_eq "exit code is 1" "1" "$code"
 assert_contains "stderr mentions NEW_RELIC_ACCOUNT_ID" "NEW_RELIC_ACCOUNT_ID" "$out"
 
 # ----------------------------------------------------------------------------
-echo "test: --dry-run with both env vars set prints all 33 names, no API calls"
+echo "test: --dry-run with both env vars set prints all 98 names, no API calls"
 # ----------------------------------------------------------------------------
 out=$(env -i PATH="$PATH" NEW_RELIC_API_KEY=fake NEW_RELIC_ACCOUNT_ID=1234567 \
   "$APPLY" --dry-run 2>&1)
@@ -145,10 +145,12 @@ assert_contains "dry-run prints decrypt-burst alert"    "connection_url.decrypte
 assert_contains "dry-run prints deploy-by-team alert"   "deploy failure rate > 30% (1h) faceted"       "$out"
 assert_contains "dry-run prints backup-stuck alert"     "backup.requested with no follow-up"           "$out"
 
-# No real HTTP traffic — the [dry-run] tag must appear on every name
-# 12 dashboards + 21 alerts = 33 total after W10 follow-up.
+# No real HTTP traffic — the [dry-run] tag must appear on every name.
+# Count is derived from the JSON on disk (15 dashboards + 83 alerts = 98),
+# not a hand-typed list, so it stays correct as artifacts are added/removed.
+expected_count=$(ls "$NR_DIR"/dashboards/*.json "$NR_DIR"/alerts/*.json 2>/dev/null | wc -l | tr -d ' ')
 dryrun_count=$(echo "$out" | grep -c '^\[dry-run\]' || true)
-assert_eq "every name prefixed with [dry-run] (33 total)" "33" "$dryrun_count"
+assert_eq "every name prefixed with [dry-run] (one per JSON file)" "$expected_count" "$dryrun_count"
 
 # ----------------------------------------------------------------------------
 echo "test: --dry-run without env vars still validates JSON + warns"
@@ -158,24 +160,22 @@ code=$?
 assert_eq "exit code is 0 with no env (dry-run)" "0" "$code"
 assert_contains "warns about unset env" "warning" "$out"
 dryrun_count=$(echo "$out" | grep -c '^\[dry-run\]' || true)
-assert_eq "still prints 33 [dry-run] entries" "33" "$dryrun_count"
+assert_eq "still prints one [dry-run] entry per JSON file" "$expected_count" "$dryrun_count"
 
 # ----------------------------------------------------------------------------
 echo "test: every JSON file in dashboards/ and alerts/ parses cleanly"
 # ----------------------------------------------------------------------------
 broken=0
+total_json=0
 for f in "$NR_DIR"/dashboards/*.json "$NR_DIR"/alerts/*.json; do
+  total_json=$((total_json+1))
   if ! jq empty "$f" >/dev/null 2>&1; then
     echo "  FAIL invalid JSON: $f"
     broken=$((broken+1))
   fi
 done
 if [ "$broken" -eq 0 ]; then
-<<<<<<< HEAD
-  echo "  ok  all 26 JSON files parse"
-=======
-  echo "  ok  all 16 JSON files parse"
->>>>>>> b41339a (newrelic: dashboards + alerts for W7/W8/W9 audit kinds (W10 follow-up))
+  echo "  ok  all $total_json JSON files parse"
   PASS=$((PASS+1))
 else
   FAIL=$((FAIL+1))
