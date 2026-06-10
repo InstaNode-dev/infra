@@ -1,0 +1,31 @@
+{
+  "name": "postgres-customers — destructive DDL with no sanctioned provisioner drop (truehomie DDL trap)",
+  "type": "NRQL",
+  "description": "P0 DATA-LOSS. Pages when the postgres-customers pod logs a DROP DATABASE / DROP ROLE / DROP USER / DROP OWNED statement that is NOT accounted for by a sanctioned provisioner drop in the same window — the exact signature of the 2026-06-03 truehomie-db incident (an active Pro customer's db_/usr_ dropped by an unidentified, non-audited path; root cause still OPEN).\n\nSIGNAL SOURCES (both are Log records via the newrelic-logging Fluent Bit DaemonSet — this alert is deliberately FROM Log because metric-based alerting has no live Prometheus pipeline in prod):\n  (1) The DDL trap: `ALTER SYSTEM SET log_statement='ddl'` + log_connections=on was set on postgres-customers during the 2026-06-03 incident response (persisted in postgresql.auto.conf on the PVC — the visible `connection received/authorized` lines in the pod log prove the setting survived restarts). Every DDL statement appears on the pod stdout as a standard postgres line, e.g.:\n      2026-06-10 18:55:14.433 UTC [1704166] LOG:  statement: DROP DATABASE \"db_96edf9eed8ed42929036b63298ec5b2b\" WITH (FORCE)\n    (extended-protocol clients log `LOG:  execute <name>: DROP ...` instead of `statement:` — the match is on the DROP fragment, not the prefix). Pod selector: k8s_namespace_name='instant-data', k8s_label_app='postgres-customers'.\n  (2) The sanctioned-drop ledger: every legitimate customer-data drop the provisioner performs emits a structured `event=provisioner.drop` JSON log line BEFORE executing (server.guardedDrop for RPC drops; pool.deprovisionBacking with caller='pool_reaper' for hot-pool reaps — provisioner PR #56). Matched by attribute or raw-message so it is robust to whether NR lifts the JSON fields.\n\nQUERY SEMANTICS: count(pg DROP-DDL lines) - 4 * count(sanctioned shared-postgres provisioner.drop events). Each sanctioned shared-pg drop executes at most 4 matching statements (up to 3 DROP DATABASE attempts in the in-use retry loop + 1 DROP USER), so the budget is generous; a positive value means DDL ran on the shared customer cluster that the provisioner never announced. The truehomie class (drops with ZERO provisioner.drop events) always fires. fillValue STATIC 0 keeps the quiet state at 0; sanctioned-only windows go negative and never alert.\n\nKNOWN BLIND SPOT / FALSE POSITIVES (accepted for a P0 trap): (a) a window containing BOTH a sanctioned drop and a small unsanctioned one can be masked by the 4x budget — the burst class still fires; (b) an aggregation-window boundary can split a sanctioned drop from its DDL lines and blip a false CRITICAL — the 15-minute window makes this rare, and triage step 1 clears it in one grep; (c) an operator running a manual psql DROP (e.g. an in-cluster smoke per POSTGRES-CUSTOMERS-LOCKDOWN-RUNBOOK.md) WILL page — that is intended behaviour: manual admin DDL on the customer cluster must be a paged, attributed event.\n\nWHEN THIS FIRES:\n  1. Pull the offending statements: `kubectl logs -n instant-data -l app=postgres-customers --since=30m | grep -iE 'DROP (DATABASE|ROLE|USER|OWNED)'` — log_connections=on means the surrounding `connection authorized: user=... host=...` lines name the role and client_addr.\n  2. Cross-check the sanctioned ledger: `kubectl logs -n instant-infra -l app=instant-provisioner --since=30m | grep provisioner.drop` (includes caller gRPC peer / pool_reaper attribution).\n  3. If the DROP names an ACTIVE customer db_/usr_ (check resources table status): treat as truehomie recurrence — restore per the incident memory (recreate role+db with the stored decrypted connection_url password), and capture the client_addr/application_name THIS time.\n  4. Check `provisioner.drop.refused` events (the dropguard name-convention guard, provisioner PR #56): a refusal plus a pg DDL line means something bypassed the provisioner entirely.\nRunbooks: infra/POSTGRES-CUSTOMERS-LOCKDOWN-RUNBOOK.md, memory project_truehomie_db_drop_incident_2026_06_03.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT filter(count(*), WHERE k8s_namespace_name = 'instant-data' AND k8s_label_app = 'postgres-customers' AND (message LIKE '%DROP DATABASE%' OR message LIKE '%DROP ROLE%' OR message LIKE '%DROP USER%' OR message LIKE '%DROP OWNED%')) - 4 * filter(count(*), WHERE service = 'provisioner' AND (event = 'provisioner.drop' OR message LIKE '%\"event\":\"provisioner.drop\"%') AND (resource_type = 'RESOURCE_TYPE_POSTGRES' OR message LIKE '%RESOURCE_TYPE_POSTGRES%') AND (backend = 'shared' OR message LIKE '%\"backend\":\"shared\"%')) FROM Log"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 900,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 900,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

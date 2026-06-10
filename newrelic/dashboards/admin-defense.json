@@ -133,6 +133,112 @@
           }
         }
       ]
+    },
+    {
+      "name": "customer-db DDL trap",
+      "description": "Truehomie-db DROP incident (2026-06-03) trap surface: every DROP DATABASE/ROLE/USER/OWNED the postgres-customers pod logs (log_statement='ddl', set 2026-06-03, persists on the PVC) vs the provisioner's sanctioned-drop ledger (event=provisioner.drop — guardedDrop + pool_reaper, provisioner PR #56). Pairs with the customer-db-destructive-ddl.json CRITICAL alert (FROM Log — no Prometheus pipeline in prod).",
+      "widgets": [
+        {
+          "title": "UNSANCTIONED drop-DDL delta (alert signal; must be <= 0)",
+          "layout": {
+            "column": 1,
+            "row": 1,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT filter(count(*), WHERE k8s_namespace_name = 'instant-data' AND k8s_label_app = 'postgres-customers' AND (message LIKE '%DROP DATABASE%' OR message LIKE '%DROP ROLE%' OR message LIKE '%DROP USER%' OR message LIKE '%DROP OWNED%')) - 4 * filter(count(*), WHERE service = 'provisioner' AND (event = 'provisioner.drop' OR message LIKE '%\"event\":\"provisioner.drop\"%') AND (resource_type = 'RESOURCE_TYPE_POSTGRES' OR message LIKE '%RESOURCE_TYPE_POSTGRES%') AND (backend = 'shared' OR message LIKE '%\"backend\":\"shared\"%')) AS 'unsanctioned drop-DDL delta' FROM Log SINCE 3 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "postgres-customers DROP statements vs sanctioned provisioner drops (24h)",
+          "layout": {
+            "column": 5,
+            "row": 1,
+            "width": 8,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT filter(count(*), WHERE k8s_namespace_name = 'instant-data' AND k8s_label_app = 'postgres-customers' AND (message LIKE '%DROP DATABASE%' OR message LIKE '%DROP ROLE%' OR message LIKE '%DROP USER%' OR message LIKE '%DROP OWNED%')) AS 'pg DROP statements', filter(count(*), WHERE service = 'provisioner' AND (event = 'provisioner.drop' OR message LIKE '%\"event\":\"provisioner.drop\"%') AND (resource_type = 'RESOURCE_TYPE_POSTGRES' OR message LIKE '%RESOURCE_TYPE_POSTGRES%') AND (backend = 'shared' OR message LIKE '%\"backend\":\"shared\"%')) AS 'sanctioned shared-pg drops' FROM Log TIMESERIES AUTO SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Latest DROP statements on postgres-customers (raw trap lines, 7d)",
+          "layout": {
+            "column": 1,
+            "row": 4,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT timestamp, message FROM Log WHERE k8s_namespace_name = 'instant-data' AND k8s_label_app = 'postgres-customers' AND (message LIKE '%DROP DATABASE%' OR message LIKE '%DROP ROLE%' OR message LIKE '%DROP USER%' OR message LIKE '%DROP OWNED%') SINCE 7 days ago LIMIT 50"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Sanctioned drops by caller + dropguard REFUSALS (must be 0) (24h)",
+          "layout": {
+            "column": 7,
+            "row": 4,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  0
+                ],
+                "query": "SELECT filter(count(*), WHERE service = 'provisioner' AND (event = 'provisioner.drop' OR message LIKE '%\"event\":\"provisioner.drop\"%')) AS 'sanctioned drops (all types)', filter(count(*), WHERE service = 'provisioner' AND (event = 'provisioner.drop.refused' OR message LIKE '%\"event\":\"provisioner.drop.refused\"%')) AS 'dropguard refusals (bug/attack if > 0)' FROM Log SINCE 24 hours ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -268,3 +268,26 @@ cd /tmp/wt-nr-rollup/newrelic
 
 The README update is intentionally left as a manual follow-up because the
 existing list is hand-curated.
+
+## customer-db destructive-DDL trap alert + dashboard page (2026-06-11, task D3)
+
+New CRITICAL log-based alert `alerts/customer-db-destructive-ddl.json` and a
+third page ("customer-db DDL trap") on `dashboards/admin-defense.json`.
+
+- **What it watches:** the `log_statement='ddl'` trap set on postgres-customers
+  during the 2026-06-03 truehomie-db incident (ALTER SYSTEM, persists on the
+  PVC). Any `DROP DATABASE/ROLE/USER/OWNED` line from the pod
+  (`k8s_namespace_name='instant-data'`, `k8s_label_app='postgres-customers'`)
+  is balanced against the provisioner's sanctioned-drop ledger
+  (`event=provisioner.drop` from server.guardedDrop and, as of provisioner
+  PR #56, pool.deprovisionBacking with `caller='pool_reaper'`); a positive
+  delta (budget: 4 DDL statements per sanctioned shared-pg drop) pages.
+- **Why FROM Log:** metric-based NR alerting has no live Prometheus pipeline
+  in prod; the companion metric alerts (`provisioner-drop-*.json`,
+  `instant_provisioner_drop_total` — now also carrying an
+  `outcome="refused"` label from the dropguard name-convention guard) stay
+  as-is for when the pipeline lands.
+- **Upstream dependency:** provisioner PR #56 (dropguard +
+  `provisioner.drop.refused` event + pool-reaper ledger entry). The alert
+  works without it but would false-positive on pool reaps; merge #56 first.
+- **Apply:** operator runs `newrelic/apply.sh` (no auto-apply in this repo).
