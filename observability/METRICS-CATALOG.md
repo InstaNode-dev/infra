@@ -109,6 +109,46 @@ Actions secrets** on the `InstaNode-dev/api`, `/worker`, and `/instanode-web`
 repos. Until then the emit step runs green and logs the payload it WOULD send
 (dry-run) — it never reds a PR.
 
+## LOG-based silent-failure backstops — 2026-06-11 (work-TODAY alerts)
+
+> **Why these exist.** A customer-facing failure (a backup failed + a mongodb
+> pod OOMKill that lost a provisioned DB) went UNDETECTED for hours until a
+> customer emailed a screenshot. The metric-based alerts that *should* have
+> caught these are **INERT**: prod has NO Prometheus pipeline
+> (`newrelic-prometheus-agent`, #72, is operator-apply-pending), so every
+> `FROM Metric` alert queries an empty stream. Only `FROM Log` (newrelic-logging
+> Fluent Bit DaemonSet) + Synthetics are live. These alerts key on the REAL
+> emitted log line so they fire TODAY; each becomes a redundant-but-useful
+> backstop once #72 is applied and the paired metric alert (where one exists)
+> goes live. Source log strings were verified against the worker/api code, not
+> invented — file:line cited per row.
+
+| Log alert | Source log line (verified) | Severity / threshold | NRQL key |
+|---|---|---|---|
+| `customer-backup-failed-nonauth-log.json` | `jobs.customer_backup_runner.failed` w/ `reason != 'auth'` — `worker/internal/jobs/customer_backup_runner.go:729` (classifier `backupFailReason` :617, reasons {dump,upload,config,decrypt}) | WARNING — ABOVE 3 / 15m (sustained; transient single `dump` self-heals next run) | `service='worker' AND message LIKE '%customer_backup_runner.failed%' AND reason != 'auth'` |
+| `customer-backup-failed.json` (pre-existing, auth) | same log line w/ `reason = 'auth'` (mongo SCRAM / redis WRONGPASS/NOAUTH / pg auth — credential-drift classifier extended to all 3 dump tools in #106) | CRITICAL — ABOVE 0 / 5m (never self-heals) | `service='worker' AND message LIKE '%customer_backup_runner.failed%' AND reason = 'auth'` |
+| `backup-stuck-row-recovery-failed.json` | `jobs.customer_backup_runner.stuck_row_recovery_failed` — `customer_backup_runner.go:370` (recoverStuckRows UPDATE error; regression guard for the NULL-started_at flood fixed in #106) | CRITICAL — ABOVE 0 / 10m (any occurrence = bug) | `service='worker' AND message LIKE '%customer_backup_runner.stuck_row_recovery_failed%'` |
+| `deploy-failed-autopsy-log.json` | `jobs.deploy_failure_autopsy.captured` w/ bounded `reason` — `worker/internal/jobs/deploy_failure_autopsy.go:402` (pairs with audit_log kind='deploy.failed'; rule 27). LOG twin of the inert `deploy-job-failed-detected.json` + `deploy-runtime-failed-detected.json` (FROM Metric) | CRITICAL — ABOVE 0 / 5m | `service='worker' AND message LIKE '%deploy_failure_autopsy.captured%'` |
+| `propagation-dead-lettered-log.json` | `jobs.propagation_runner.dead_lettered` (:892) + `jobs.propagation_runner.unknown_kind_dead_lettered` (:985) — `worker/internal/jobs/propagation_runner.go`. LOG twin of the inert `propagation-dead-lettered.json` (FROM Metric) | CRITICAL — ABOVE 0 / 5m (paid customer regrade fell through) | `service='worker' AND (message LIKE '%propagation_runner.dead_lettered%' OR message LIKE '%propagation_runner.unknown_kind_dead_lettered%')` |
+| `data-tier-pod-oomkill-restart.json` | image-native startup banner of each `instant-data` stateful pod reappearing = restart: postgres-customers `database system is ready to accept connections`, mongodb `Waiting for connections`, redis-provision `Ready to accept connections`, nats `Server is ready` (pinned images pgvector:pg16 / mongo:7 / redis:7-alpine / nats:2.10-alpine). FACET `k8s_label_app`. | CRITICAL — ABOVE 0 / 5m, per pod | `k8s_namespace_name='instant-data' AND (<per-app banner match>) FACET k8s_label_app` |
+
+**Acknowledged blind spots (flagged, need #72 / kube-events to fully close):**
+- `data-tier-pod-oomkill-restart.json` is a **restart** detector, not a true
+  OOMKill detector — it cannot read the exit code (137) or distinguish an
+  involuntary OOMKill from a deliberate operator rollout (a planned restart /
+  the DATA-TIER-APPLY-RUNBOOK maintenance-window apply WILL fire it once per
+  pod; ack during the window). The authoritative `reason='OOMKilled'` event
+  (K8sContainerSample / `kube_pod_container_status_last_terminated_reason`)
+  needs **kube-state-metrics + the NR Kubernetes/kube-events integration OR the
+  #72 Prometheus pipeline**, neither of which is in prod. Until then this banner
+  detector is the alarm, paired with the eviction-PROTECTION manifest
+  (`k8s/data/stateful-priority.yaml` PriorityClass+PDBs + per-pod resource
+  requests/limits; R7 #69, operator-apply-pending) that PREVENTS the OOMKill.
+- The deploy + propagation LOG alerts are **backstops**, not replacements: when
+  #72 lands, the `FROM Metric` originals (`deploy-job-failed-detected.json`,
+  `deploy-runtime-failed-detected.json`, `propagation-dead-lettered.json`)
+  carry the per-`reason`/`kind` faceting and rate semantics; keep both.
+
 ## Lazy-emit gotcha — what operators should expect
 
 For every metric flagged `lazy` above, **a freshly-deployed pod will not show

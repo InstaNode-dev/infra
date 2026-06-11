@@ -1,0 +1,31 @@
+{
+  "name": "instant-data — stateful pod RESTARTED (OOMKill/eviction signal: postgres-customers/mongodb/redis-provision/nats)",
+  "type": "NRQL",
+  "description": "CRITICAL on ANY occurrence. Detects a restart of a single-replica STATEFUL data-tier pod in the instant-data namespace by watching for its container's fresh startup banner reappearing in the log stream. On the memory-overcommitted cluster these pods were BestEffort QoS (resources:{}) and were the FIRST thing OOMKilled/evicted under node memory pressure — which is EXACTLY the failure that OOMKilled the mongodb pod (exit 137) and lost a provisioned customer DB this session, undetected for hours until a customer emailed a screenshot.\n\nWHY A LOG (startup-banner) DETECTOR: prod ships only pod stdout (via the newrelic-logging Fluent Bit DaemonSet), APM, and OTLP — there is NO Prometheus pipeline and NO kube-state-metrics / kube-events integration. So the AUTHORITATIVE OOMKill signal (a Kubernetes pod event with reason='OOMKilled', or kube_pod_container_status_restarts_total / container last-terminated exitCode=137) is NOT available in NR today. What IS available is each pod's own stdout. A single-replica stateful pod prints its startup banner ONLY on (re)start, so a banner appearing = the pod just (re)started — and outside a deliberate operator rollout, a stateful-pod restart is an OOMKill/eviction/crash. The startup strings below are the stable, image-native banners of the official upstream images (verified against the pinned images: pgvector/pgvector:pg16, mongo:7, redis:7-alpine, nats:2.10-alpine — NOT platform-emitted strings):\n  - postgres-customers (pgvector:pg16):  'database system is ready to accept connections'\n  - mongodb (mongo:7):                   'Waiting for connections'   (mongo logs structured JSON: \"msg\":\"Waiting for connections\")\n  - redis-provision (redis:7-alpine):    'Ready to accept connections'\n  - nats (nats:2.10-alpine):             'Server is ready'\nPod selector: k8s_namespace_name='instant-data', faceted by k8s_label_app so the violation names which data pod bounced. Shipped to NR via the newrelic-logging Fluent Bit DaemonSet.\n\nKNOWN LIMITATION / FALSE POSITIVES (accepted to have a signal TODAY): (a) this CANNOT distinguish an OOMKill from a deliberate operator rollout/restart — a planned `kubectl rollout restart` or the DATA-TIER-APPLY-RUNBOOK maintenance-window apply WILL fire this once per pod (expected; ack it during the window). (b) It cannot read the exit code, so it can't confirm exitCode=137 specifically. PROPER FOLLOW-UP (durable upgrade): once kube-state-metrics + the newrelic-prometheus-agent pipeline (#72) OR the NR Kubernetes/kube-events integration is applied in prod, replace/augment this with the authoritative event-based detector — alert on K8sContainerSample reason='OOMKilled' or kube_pod_container_status_last_terminated_reason{reason='OOMKilled'} / restarts_total derivative > 0, which fires ONLY on a real involuntary kill and never on a planned rollout. Until then, this banner detector is the alarm and is paired with the eviction-PROTECTION manifest (k8s/data/stateful-priority.yaml PriorityClass+PDBs + per-pod resource requests/limits in k8s/data/*.yaml; R7 #69, operator-apply-pending) that PREVENTS the OOMKill in the first place.\n\nWhen this fires:\n  1. Confirm + cause: `kubectl get pods -n instant-data -o wide` (RESTARTS column) then `kubectl describe pod -n instant-data <pod>` — look at Last State: Terminated, Reason: OOMKilled, Exit Code: 137. `kubectl logs --previous -n instant-data <pod>` shows the pre-crash tail.\n  2. If OOMKilled: the pod hit its memory limit (or had none → BestEffort eviction). Verify the R7 eviction-protection manifest is APPLIED (`kubectl get pod -n instant-data <pod> -o jsonpath='{.status.qosClass} {.spec.priorityClassName}'` should be Burstable/Guaranteed + instant-data-critical, NOT BestEffort/<empty>). If not applied, follow k8s/DATA-TIER-APPLY-RUNBOOK.md in a maintenance window.\n  3. VERIFY DATA INTACT (this is why the incident hurt): for mongodb confirm the lost DB/collection is present (`mongosh ... show dbs`); for postgres-customers confirm the customer db_/usr_ rows still exist; restore from the backup ladder if data was lost (infra/BACKUP-RESTORE-RUNBOOK.md).\n  4. If it was a planned operator rollout/maintenance-window apply: ack and close — this is the expected single fire per pod.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE k8s_namespace_name = 'instant-data' AND ((k8s_label_app = 'postgres-customers' AND message LIKE '%database system is ready to accept connections%') OR (k8s_label_app = 'mongodb' AND message LIKE '%Waiting for connections%') OR (k8s_label_app = 'redis-provision' AND message LIKE '%Ready to accept connections%') OR (k8s_label_app = 'nats' AND message LIKE '%Server is ready%')) FACET k8s_label_app"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 1800,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

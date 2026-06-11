@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — deploy build/runtime FAILURE detected (autopsy captured) [LOG backstop, rule 27]",
+  "type": "NRQL",
+  "description": "CRITICAL on ANY occurrence. Log-based backstop for the silent-deploy-failure class (CLAUDE.md rule 27, the 2026-05-30 incident). When a deploy's build Job lands in a terminal Failed state (BackoffLimitExceeded / DeadlineExceeded) OR the runtime rollout cannot start its container (StartFailed / ImagePullBackOff / CrashLoopBackOff / OOMKilled / ProgressDeadlineExceeded), the worker's deploy_failure_autopsy job captures the cause, stamps deployments.error_message, and emits an audit_log kind='deploy.failed' so the email forwarder dispatches the user-visible failure email — even when the api goroutine died mid-build and never wrote the terminal row. Every autopsy capture means a real customer deploy silently failed and a backstop fired.\n\nWhy a LOG alert: prod has NO Prometheus pipeline (newrelic-prometheus-agent is operator-apply-pending), so the metric alerts for this class — deploy-job-failed-detected.json and deploy-runtime-failed-detected.json (both FROM Metric on instant_deploy_job_failed_detected_total / instant_deploy_runtime_failed_detected_total) — are INERT today. This alert keys on the worker's autopsy LOG line so the failure surface is monitored RIGHT NOW; once the metrics pipeline lands the metric alerts become primary and this stays as a belt-and-suspenders.\n\nSource log line: worker emits slog.Info('jobs.deploy_failure_autopsy.captured', deployment_id=..., reason=<DeadlineExceeded|StartFailed|BuildFailed|BackoffLimitExceeded|ProgressDeadlineExceeded|OOMKilled|CrashLoopBackOff|ImagePullBackOff|Error|Unknown>, outcome=..., lines_captured=N) at worker/internal/jobs/deploy_failure_autopsy.go:402, paired with the audit_log kind='deploy.failed' row inserted by emitDeployFailedAudit (line 672). The `reason` field is the bounded failure-cause label. Shipped to NR via the newrelic-logging Fluent Bit DaemonSet. (The api also emits a synchronous deploy.failed on its own runDeploy path; this alert deliberately keys on the worker AUTOPSY line because the autopsy is the BACKSTOP that fires precisely when the api path died — the case the incident exposed.)\n\nWhen this fires:\n  1. Identify the deploy + cause: NR Logs `service='worker' message LIKE '%deploy_failure_autopsy.captured%'` FACET reason — which deployment_id, and is one reason dominating (a platform problem) vs scattered per-customer Dockerfile errors (expected at a low rate)?\n  2. reason=DeadlineExceeded across MANY deploys = the Kaniko build slot is timing out platform-wide (image bloat / degraded GHCR push path) — investigate the build pipeline, not the customer.\n  3. reason=OOMKilled/Evicted on the runtime pod = the build node is memory-tight — cross-reference data-tier-pod-oomkill-restart.json (same memory-overcommit failure mode).\n  4. Confirm the customer was told: check the deployment's error_message + that a deploy.failed failure email was dispatched (forwarder_sent ledger). Read surface for users: GET /api/v1/deployments/:id/events. See CLAUDE.md rule 27.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'worker' AND message LIKE '%deploy_failure_autopsy.captured%'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 300,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 180,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 3600,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}

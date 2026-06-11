@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — customer backup FAILED (non-auth, sustained) [LOG backstop]",
+  "type": "NRQL",
+  "description": "WARNING. Log-based backstop that fires when per-tenant (customer) backups fail for a NON-auth reason (reason != 'auth' — i.e. 'dump' / 'upload' / 'config' / 'decrypt': the DB was briefly unreachable, a timeout, an object-store write error, or a credential-decrypt/config problem) at a sustained rate. A single transient 'dump' failure self-heals on the next scheduled run, so this is intentionally a sustained-rate WARNING (ABOVE 3 in 15m), NOT a per-occurrence page — that distinguishes it from the credential-drift case which never self-heals (see customer-backup-failed.json, reason='auth', CRITICAL ABOVE 0).\n\nWhy this exists: this is the 'never blind again' backstop for the 2026-06 incident where a backup failed and went undetected for hours until a customer emailed a screenshot. The pre-existing backup alerts MISS a sustained-but-non-auth failure cluster: backup-stale-36h.json only fires after 36h of no SUCCESS line (far too slow), backup-requested-no-followup.json only fires on STUCK rows (a clean failure emits backup.failed so it counts as 'followed up'), and customer-backup-failed.json only covers reason='auth'. A node going memory-tight and OOMKilling the customer Postgres/Mongo pod, or DO Spaces rejecting uploads, produces a burst of reason='dump'/'upload' failures that previously paged no one. This alert is a LOG alert (FROM Log) so it works TODAY: prod has NO Prometheus pipeline (newrelic-prometheus-agent is operator-apply-pending), so the metric instant_customer_backup_failed_total{reason} is INERT. Once that pipeline lands the metric alert becomes the primary and this remains a useful belt-and-suspenders.\n\nSource log line: worker markFailed emits slog.Error('jobs.customer_backup_runner.failed', reason=<auth|dump|upload|config|decrypt>, internal_detail=..., duration_ms=...) at worker/internal/jobs/customer_backup_runner.go:729. Classified by backupFailReason() (line 617). The line carries backup_id + internal_detail (raw dump-tool stderr) for triage. Shipped to NR via the newrelic-logging Fluent Bit DaemonSet.\n\nWhen this fires:\n  1. Identify scope + reason: NR Logs `service='worker' message LIKE '%customer_backup_runner.failed%' reason != 'auth'` FACET reason — is it one resource flapping or many at once?\n  2. reason='dump' across MANY resources at once = the shared customer DB pod (postgres-customers / mongodb / redis-provision) is unreachable or was OOMKilled/evicted — check `kubectl get pods -n instant-data` for restarts and cross-reference data-tier-pod-oomkill-restart.json.\n  3. reason='upload' = DO Spaces / object-store write path is failing — check the bucket + credentials.\n  4. reason='config'/'decrypt' = an internal AES_KEY / connection_url problem — page, this won't self-heal.\n  5. Confirm recovery: the next scheduled backup tick should re-run; watch for the success line `jobs.customer_backup_runner.succeeded`. See infra/BACKUP-RESTORE-RUNBOOK.md.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'worker' AND message LIKE '%customer_backup_runner.failed%' AND reason != 'auth'"
+  },
+  "terms": [
+    {
+      "priority": "WARNING",
+      "operator": "ABOVE",
+      "threshold": 3,
+      "thresholdDuration": 900,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 1800,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
