@@ -9,6 +9,19 @@ binary but do NOT appear at `/metrics` until the first `.Inc()` or `.Set()`
 fires. Operators need this so they don't panic when a fresh deploy looks
 "missing" a metric — it's just zero-cardinality until something happens.
 
+> **PREREQUISITE — the metrics ingestion pipeline.** Every NR alert in this
+> catalog of the form `FROM Metric WHERE metricName LIKE 'instant_%'` (or
+> `provisioner_*`, `brevo_*`, `readyz_*`) requires a Prometheus scraper that
+> pulls the three services' `/metrics` and remote-writes them to New Relic.
+> That scraper is **`k8s/newrelic-prometheus-agent.yaml`** (the
+> newrelic-prometheus-agent). Until it is applied, the `Metric` event type is
+> empty in NR and **every `FROM Metric` alert is INERT** — it queries a stream
+> that does not exist (verified 2026-06-11: the prod cluster shipped only logs,
+> APM, and OTLP traces — no metrics pipeline). Log-based alerts (those keyed on
+> `FROM Log`) are unaffected. Apply + verify runbook:
+> **`infra/OBSERVABILITY-PIPELINE.md`**. This pipeline is a hard dependency of
+> the entire Catalog below.
+
 ## Reading the table
 
 | Column | Meaning |

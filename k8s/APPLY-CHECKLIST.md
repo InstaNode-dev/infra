@@ -312,6 +312,60 @@ purely additive, so reverting only narrows the grant back to
 
 ---
 
+## New Relic Prometheus agent — metrics ingestion pipeline (2026-06-11)
+
+`k8s/newrelic-prometheus-agent.yaml` adds the **only metrics scraper** in the
+cluster. Before it, prod shipped logs + APM + OTLP traces but **no metrics**,
+so ~46 `FROM Metric WHERE metricName LIKE 'instant_%'` NR alerts were inert
+(querying an empty `Metric` stream). This manifest deploys the official
+newrelic-prometheus-agent (configurator initContainer + Prometheus `--agent`)
+in the `newrelic` namespace, scraping the three services' `/metrics` by pod
+SD and remote-writing to NR's US Prometheus endpoint.
+
+**This manifest is additive + safe to apply** — it creates net-new objects
+(SA, ClusterRole/Binding, ConfigMap, Deployment) in the `newrelic` namespace
+and touches **nothing** the api/worker/provisioner Deployments own. It does
+NOT have the `app.yaml` clobber hazards (no `:local` image, no
+`imagePullSecrets` strip).
+
+**One hazard — the placeholder Secret.** The file ships a Secret template
+(`newrelic-prometheus-agent-secrets`) with `CHANGE_ME` for
+`NEW_RELIC_LICENSE_KEY` + `METRICS_TOKEN`. Applying that document AFTER you've
+created the real secret would clobber it with `CHANGE_ME` and CrashLoop the
+agent (`ErrNoLicenseKeyFound`). Create the real secret first (copying the live
+NR license key from `instant-secrets` and the `METRICS_TOKEN` inline value off
+the api Deployment), then apply everything EXCEPT the Secret. This is the same
+`CHANGE_ME`-clobber class as `secrets.yaml` — use the same guardrail discipline
+(`scripts/safe-secret-apply.sh`).
+
+Full apply + the post-apply verification gate (the NRQL that proves
+`instant_*` series landed and the 46 alerts flipped live), plus the list of
+high-value alerts that go armed: **`infra/OBSERVABILITY-PIPELINE.md`**.
+
+Quick apply (real secret first, then the rest):
+
+```bash
+# real secret — values copied live, never committed:
+kubectl create secret generic newrelic-prometheus-agent-secrets -n newrelic \
+  --from-literal=NEW_RELIC_LICENSE_KEY="$(kubectl get secret instant-secrets -n instant -o jsonpath='{.data.NEW_RELIC_LICENSE_KEY}' | base64 -d)" \
+  --from-literal=METRICS_TOKEN="$(kubectl get deploy instant-api -n instant -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="METRICS_TOKEN")].value}')" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# everything else (skip the placeholder Secret in the file):
+yq 'select(.kind != "Secret")' k8s/newrelic-prometheus-agent.yaml | kubectl apply -f -
+
+kubectl rollout status deploy/newrelic-prometheus-agent -n newrelic --timeout=120s
+```
+
+Verify (NR query builder): `FROM Metric SELECT count(*) WHERE metricName LIKE
+'instant_%' SINCE 10 minutes ago` returns non-zero within ~5 min → the 46
+`FROM Metric` alerts are live.
+
+Rollback: `kubectl delete -f k8s/newrelic-prometheus-agent.yaml
+--ignore-not-found` + delete the secret. No other telemetry stream affected.
+
+---
+
 ## Related files
 
 - `README.md` — secrets clobber warning (the same class of bug, but for
@@ -322,3 +376,7 @@ purely additive, so reverting only narrows the grant back to
   referenced by the `instanode.dev/image-pinned` labels
 - `apply-all.sh` — the bootstrap script (intended for fresh clusters,
   NOT for in-place prod updates)
+- `../OBSERVABILITY-PIPELINE.md` — the New Relic Prometheus agent apply +
+  verify runbook (metrics ingestion pipeline; the 46-alert gate)
+- `../observability/METRICS-CATALOG.md` — the metric catalog; the pipeline
+  above is its hard prerequisite (every `FROM Metric` alert depends on it)

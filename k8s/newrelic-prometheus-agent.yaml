@@ -1,0 +1,417 @@
+---
+# newrelic-prometheus-agent.yaml
+#
+# Closes the single biggest observability gap on the platform: there was NO
+# metrics ingestion pipeline in do-nyc3-instant-prod. Only newrelic-logging
+# (Fluent Bit), the APM Go agent, and OTLP traces shipped to New Relic — NO
+# Prometheus /metrics scraper. As a result ~46 New Relic alert conditions of
+# the form `FROM Metric WHERE metricName LIKE 'instant_%'` were INERT: they
+# query a metric stream that did not exist. backup-stale-36h,
+# razorpay-webhook-sig-fail, the deploy-silent-failure triad
+# (deploy-job-failed-detected / deploy-runtime-failed-detected),
+# circuit-breaker, pg-pool-saturation, and ~40 more all sat dark.
+#
+# This manifest deploys the OFFICIAL newrelic-prometheus-agent
+# (newrelic-prometheus-configurator + Prometheus in --agent mode) as a single
+# stateless 2-container pod. It scrapes the three backend services' /metrics
+# and remote-writes the `instant_*` / `provisioner_*` series to New Relic's
+# Prometheus endpoint, lighting up every `FROM Metric` alert at once.
+#
+# Chosen over:
+#   * the full nri-bundle (kube-state-metrics + infra DaemonSet + Pixie) —
+#     too heavy for the thin 6×(2cpu/4GB) prod pool. We only need the three
+#     app /metrics endpoints, not full cluster-state monitoring.
+#   * self-hosted Prometheus + Grafana — another stateful pod with a PVC to
+#     back up. Agent mode keeps only a 30-min WAL and forwards everything to
+#     NR, where the dashboards + alerts already live.
+#
+# Architecture (the official configurator pattern):
+#   1. initContainer `configurator` (newrelic/newrelic-prometheus-configurator)
+#      reads this ConfigMap's config.yaml (the configurator schema), expands
+#      $NR_PROM_LICENSE_KEY from the secret, and renders a standard Prometheus
+#      scrape config into a shared emptyDir.
+#   2. container `prometheus` (quay.io/prometheus/prometheus --agent) reads the
+#      rendered config and remote-writes to
+#      https://metric-api.newrelic.com/prometheus/v1/write (US datacenter —
+#      auto-selected from the license-key region; the existing logging +
+#      go-agents target US).
+#
+# Apply: deliberate, operator-driven. This repo has NO auto-apply (CLAUDE.md
+# rule 15). See OBSERVABILITY-PIPELINE.md + k8s/APPLY-CHECKLIST.md for the
+# apply + verify runbook (the post-apply NRQL gate that proves `instant_*`
+# series landed and the ~46 alerts went live).
+#
+# Secret prerequisites (created by the operator BEFORE apply — see the Secret
+# template at the bottom of this file; never commit real values):
+#   secret/newrelic-prometheus-agent-secrets (ns newrelic) with keys:
+#     NEW_RELIC_LICENSE_KEY  — copied from instant-secrets (ns instant) /
+#                              instant-infra-secrets (ns instant-infra). Same
+#                              INGEST key the logging DaemonSet + go-agents use.
+#     METRICS_TOKEN          — the bearer that gates the api /metrics endpoint.
+#                              Live value is an inline `value:` on all three
+#                              Deployments (NOT a k8s secret key today); copy it
+#                              into this secret. Same token across api/worker/
+#                              provisioner.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: newrelic-prometheus-agent
+  namespace: newrelic
+  labels:
+    app: newrelic-prometheus-agent
+    app.kubernetes.io/name: newrelic-prometheus-agent
+    app.kubernetes.io/part-of: instanode-observability
+---
+# Least-privilege ClusterRole. The agent uses Kubernetes pod service discovery
+# (role: pod) to find the three backend pods by their `app` label. Static
+# Service-DNS targets do NOT work here:
+#   * instant-worker has NO Service in prod (background-job Deployment) — its
+#     /metrics on :8091 is reachable only via pod IP.
+#   * instant-provisioner's Service exposes ONLY :50051 (gRPC); the :8092
+#     metrics sidecar port is not in the Service, so it is reachable only via
+#     pod IP.
+# Pod SD needs read access to pods (and nodes/endpoints for completeness of the
+# Prometheus k8s discovery client). No write verbs anywhere.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: newrelic-prometheus-agent
+  labels:
+    app: newrelic-prometheus-agent
+    app.kubernetes.io/name: newrelic-prometheus-agent
+    app.kubernetes.io/part-of: instanode-observability
+rules:
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - nodes/metrics
+      - services
+      - endpoints
+      - pods
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources:
+      - endpointslices
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: newrelic-prometheus-agent
+  labels:
+    app: newrelic-prometheus-agent
+    app.kubernetes.io/name: newrelic-prometheus-agent
+    app.kubernetes.io/part-of: instanode-observability
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: newrelic-prometheus-agent
+subjects:
+  - kind: ServiceAccount
+    name: newrelic-prometheus-agent
+    namespace: newrelic
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: newrelic-prometheus-agent
+  namespace: newrelic
+  labels:
+    app: newrelic-prometheus-agent
+    app.kubernetes.io/name: newrelic-prometheus-agent
+    app.kubernetes.io/part-of: instanode-observability
+data:
+  # config.yaml — the newrelic-prometheus-configurator INPUT schema (NOT raw
+  # Prometheus). The configurator translates this into a Prometheus agent
+  # config at init time. `license_key` is intentionally omitted: the
+  # configurator picks it up from the NR_PROM_LICENSE_KEY env var (builder.go
+  # LicenseKeyEnvKey). The remote-write URL + US/EU region are derived from
+  # the license-key prefix → US for our key.
+  config.yaml: |-
+    common:
+      # Same cluster name the newrelic-logging DaemonSet stamps
+      # (CLUSTER_NAME=instant-prod) so logs + metrics correlate in NR.
+      external_labels:
+        cluster_name: instant-prod
+      # 3 targets, low-churn series — 30s is plenty and keeps ingest cost down.
+      scrape_interval: 30s
+      scrape_timeout: 10s
+
+    # newrelic_remote_write is intentionally OMITTED from this config. The
+    # configurator builds the New Relic remote-write block from the
+    # NR_PROM_LICENSE_KEY env var (builder.go: if the env key is set it fills
+    # RemoteWrite.LicenseKey) and derives the US remote-write URL
+    # (https://metric-api.newrelic.com/prometheus/v1/write) from the
+    # license-key region prefix. data_source_name comes from
+    # NR_PROM_DATA_SOURCE_NAME (the pod name) → ?prometheus_server= query param.
+    # No inline secrets live in this ConfigMap.
+
+    # extra_scrape_configs — raw Prometheus scrape_configs. Used (instead of the
+    # configurator's simpler `kubernetes.jobs`) because the three targets are
+    # heterogeneous: different ports (8080 / 8091 / 8092) AND different auth
+    # (only api gates /metrics behind METRICS_TOKEN; worker + provisioner serve
+    # /metrics openly today). One pod-SD job per service gives exact per-job
+    # control of __address__ (port override) and the bearer header.
+    #
+    # The bearer is read from a file the Prometheus container mounts from the
+    # secret (/etc/nr-metrics-token/METRICS_TOKEN). It is sent to ALL three
+    # targets: required by api (401 without), harmlessly ignored by the
+    # worker/provisioner bare promhttp handlers — so the config stays correct
+    # if worker/provisioner gain METRICS_TOKEN gating later.
+    extra_scrape_configs:
+      # ── instant-api → :8080/metrics (ns instant) — BEARER REQUIRED ──────────
+      - job_name: instant-api
+        scheme: http
+        metrics_path: /metrics
+        authorization:
+          type: Bearer
+          credentials_file: /etc/nr-metrics-token/METRICS_TOKEN
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [instant]
+        relabel_configs:
+          # Keep only ready instant-api pods.
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: instant-api
+          - source_labels: [__meta_kubernetes_pod_ready]
+            action: keep
+            regex: "true"
+          # Force the scrape address to podIP:8080 regardless of declared
+          # containerPorts (avoids scraping every port the pod exposes).
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "${1}:8080"
+          # Stable identity labels in NR.
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - target_label: service
+            replacement: instant-api
+
+      # ── instant-worker → :8091/metrics (ns instant-infra) — OPEN ───────────
+      - job_name: instant-worker
+        scheme: http
+        metrics_path: /metrics
+        authorization:
+          type: Bearer
+          credentials_file: /etc/nr-metrics-token/METRICS_TOKEN
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [instant-infra]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: instant-worker
+          - source_labels: [__meta_kubernetes_pod_ready]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "${1}:8091"
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - target_label: service
+            replacement: instant-worker
+
+      # ── instant-provisioner → :8092/metrics (ns instant-infra) — OPEN ──────
+      # The metrics sidecar listens on :8092 even though that port is not a
+      # declared containerPort on the live Deployment — pod SD targets podIP
+      # directly, so the scrape works regardless.
+      - job_name: instant-provisioner
+        scheme: http
+        metrics_path: /metrics
+        authorization:
+          type: Bearer
+          credentials_file: /etc/nr-metrics-token/METRICS_TOKEN
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [instant-infra]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: instant-provisioner
+          - source_labels: [__meta_kubernetes_pod_ready]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "${1}:8092"
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - target_label: service
+            replacement: instant-provisioner
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: newrelic-prometheus-agent
+  namespace: newrelic
+  labels:
+    app: newrelic-prometheus-agent
+    app.kubernetes.io/name: newrelic-prometheus-agent
+    app.kubernetes.io/part-of: instanode-observability
+spec:
+  # Single replica — a metrics scraper is stateless and 3 targets is trivial
+  # load. Duplicate scraping from 2 replicas would double-ingest every series.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: newrelic-prometheus-agent
+  strategy:
+    # Recreate avoids two scrapers briefly double-writing during a rollout.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: newrelic-prometheus-agent
+        app.kubernetes.io/name: newrelic-prometheus-agent
+        app.kubernetes.io/part-of: instanode-observability
+      annotations:
+        # Re-render + restart when the scrape config changes.
+        checksum/config: "REPLACE_ON_CONFIG_CHANGE"
+    spec:
+      serviceAccountName: newrelic-prometheus-agent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      initContainers:
+        # configurator — translates the ConfigMap's configurator-schema
+        # config.yaml into a Prometheus agent config, expanding the license
+        # key + data source name from env. Writes to the shared emptyDir.
+        - name: configurator
+          image: newrelic/newrelic-prometheus-configurator:2.11.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --input=/etc/configurator/config.yaml
+            - --output=/etc/prometheus/config/config.yaml
+          env:
+            # data_source_name → ?prometheus_server= on the NR remote-write URL.
+            - name: NR_PROM_DATA_SOURCE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # The NR INGEST license key. Copied into this secret from
+            # instant-secrets / instant-infra-secrets by the operator.
+            - name: NR_PROM_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: newrelic-prometheus-agent-secrets
+                  key: NEW_RELIC_LICENSE_KEY
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: configurator-config
+              mountPath: /etc/configurator
+            - name: prometheus-config
+              mountPath: /etc/prometheus/config
+      containers:
+        # prometheus — runs in agent mode (no query/UI, 30-min WAL only),
+        # reads the rendered config, remote-writes to New Relic.
+        - name: prometheus
+          image: quay.io/prometheus/prometheus:v3.12.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/config/config.yaml
+            - --agent
+            - --storage.agent.retention.max-time=30m
+            - --storage.agent.wal-truncate-frequency=30m
+            - --storage.agent.path=/etc/prometheus/storage
+          ports:
+            - name: http
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: prometheus-config
+              mountPath: /etc/prometheus/config
+              readOnly: true
+            - name: prometheus-storage
+              mountPath: /etc/prometheus/storage
+            # The api /metrics bearer, mounted from the secret as a file the
+            # scrape jobs reference via credentials_file.
+            - name: metrics-token
+              mountPath: /etc/nr-metrics-token
+              readOnly: true
+      volumes:
+        # The configurator INPUT (this ConfigMap).
+        - name: configurator-config
+          configMap:
+            name: newrelic-prometheus-agent
+        # Shared scratch for the rendered Prometheus config (init → main).
+        - name: prometheus-config
+          emptyDir: {}
+        # Agent WAL — ephemeral, 30-min retention, no PVC to back up.
+        - name: prometheus-storage
+          emptyDir: {}
+        # METRICS_TOKEN as a file (key projected to its own filename so
+        # credentials_file points at /etc/nr-metrics-token/METRICS_TOKEN).
+        - name: metrics-token
+          secret:
+            secretName: newrelic-prometheus-agent-secrets
+            items:
+              - key: METRICS_TOKEN
+                path: METRICS_TOKEN
+---
+# Secret TEMPLATE — DO NOT commit real values (repo convention: CHANGE_ME).
+# The operator creates/patches this in the `newrelic` namespace before apply,
+# copying the live values from the existing sources (commands in
+# OBSERVABILITY-PIPELINE.md). Both keys are required for the agent to start:
+#   * NEW_RELIC_LICENSE_KEY missing → configurator errors ErrNoLicenseKeyFound.
+#   * METRICS_TOKEN missing → the metrics-token volume fails to mount and the
+#     api scrape returns 401 (worker/provisioner would still scrape).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: newrelic-prometheus-agent-secrets
+  namespace: newrelic
+  labels:
+    app: newrelic-prometheus-agent
+    app.kubernetes.io/name: newrelic-prometheus-agent
+    app.kubernetes.io/part-of: instanode-observability
+type: Opaque
+stringData:
+  # Copy from: kubectl get secret instant-secrets -n instant \
+  #   -o jsonpath='{.data.NEW_RELIC_LICENSE_KEY}' | base64 -d
+  NEW_RELIC_LICENSE_KEY: "CHANGE_ME"
+  # Copy from the api Deployment's inline METRICS_TOKEN env value:
+  #   kubectl get deploy instant-api -n instant -o jsonpath=\
+  #     '{.spec.template.spec.containers[0].env[?(@.name=="METRICS_TOKEN")].value}'
+  METRICS_TOKEN: "CHANGE_ME"
