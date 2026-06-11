@@ -1,0 +1,31 @@
+{
+  "name": "instant-worker — backup stuck-row recovery FAILED (recoverStuckRows UPDATE erroring) [regression guard]",
+  "type": "NRQL",
+  "description": "CRITICAL on ANY occurrence. The customer_backup_runner's recoverStuckRows() sweep resets backup rows orphaned at status='running' (a casualty of a worker pod kill mid-backup) back to 'pending' so a future tick re-claims them. If that recovery UPDATE itself errors, the orphaned rows stay stuck at 'running' FOREVER — every backup for those resources silently stops, no SUCCESS line is ever emitted again, and (because the row is neither pending nor failed) the existing backup alerts stay quiet. This is exactly the silent-failure class behind the 2026-06 incident: a backup stopped and nobody knew for hours.\n\nThis is also a direct regression guard for the just-fixed NULL-started_at bug (worker commit 17a18ca / #106): the recovery UPDATE previously bound started_at=NULL into the TIMESTAMPTZ NOT NULL column (api migration 031_backups.sql), so the UPDATE failed on EVERY tick — recovery never worked and the log FLOODED with stuck_row_recovery_failed lines, unalerted, for hours. The fix stopped touching started_at; this alert ensures that if the recovery UPDATE ever errors again (schema drift, a new NOT-NULL constraint, a DB brownout that the best-effort sweep swallows), an operator is paged on the FIRST occurrence instead of discovering it via a customer screenshot.\n\nSource log line: worker recoverStuckRows emits slog.Warn('jobs.customer_backup_runner.stuck_row_recovery_failed', error=<...>) at worker/internal/jobs/customer_backup_runner.go:370. The sweep is best-effort (it logs and returns so the normal pending-row drain still proceeds), so the LOG line is the ONLY signal — there is no metric and no row-state change to alert on. Shipped to NR via the newrelic-logging Fluent Bit DaemonSet. Any occurrence = a bug; threshold ABOVE 0.\n\nWhen this fires:\n  1. Pull the error: NR Logs `service='worker' message LIKE '%stuck_row_recovery_failed%'` — the `error` field carries the raw DB error (e.g. a constraint violation = schema drift on resource_backups).\n  2. Check for orphaned rows: `SELECT id, resource_id, status, started_at FROM resource_backups WHERE status='running' AND started_at < now() - interval '15 minutes'` — these are the rows recovery should have reset.\n  3. If it's a constraint/schema error: a migration changed resource_backups in a way that breaks the recovery UPDATE — fix the UPDATE (worker customer_backup_runner.go recoverStuckRows) and redeploy; manually reset the orphaned rows to 'pending' to unstick them in the meantime.\n  4. If it's a transient DB error: confirm the next sweep succeeds (the line should stop) and the orphaned rows drain. See infra/BACKUP-RESTORE-RUNBOOK.md.",
+  "enabled": true,
+  "nrql": {
+    "query": "SELECT count(*) FROM Log WHERE service = 'worker' AND message LIKE '%customer_backup_runner.stuck_row_recovery_failed%'"
+  },
+  "terms": [
+    {
+      "priority": "CRITICAL",
+      "operator": "ABOVE",
+      "threshold": 0,
+      "thresholdDuration": 600,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }
+  ],
+  "signal": {
+    "aggregationWindow": 300,
+    "aggregationMethod": "EVENT_FLOW",
+    "aggregationDelay": 120,
+    "fillOption": "STATIC",
+    "fillValue": 0
+  },
+  "expiration": {
+    "expirationDuration": 1800,
+    "openViolationOnExpiration": false,
+    "closeViolationsOnExpiration": true
+  },
+  "violationTimeLimitSeconds": 86400
+}
