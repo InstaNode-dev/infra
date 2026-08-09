@@ -1,4 +1,48 @@
 ###############################################################################
+# !!! SUPERSEDED FIGURES BELOW - READ THIS BLOCK FIRST (2026-08-09, post-apply)
+#
+# Three facts changed after this file was written. The `locals` are updated and
+# `terraform output monthly_cost_breakdown` is correct; the PROSE below is not.
+# Where they disagree, this block wins.
+#
+# 1. THE CREDIT EXPIRES 2026-09-12, NOT IN 12 MONTHS.
+#    Read live from the subscription: "Azure startup sponsorship credit",
+#    $1,000, started 2026-06-14, expires 2026-09-12. Operator confirmed there
+#    is NO follow-on grant.
+#
+#    Every runway calculation in section D below - "9.1 months", "10.3 months",
+#    "13.9 months" - is therefore MEANINGLESS. At ~$184/mo only ~$210 is
+#    consumable before expiry; ~$790 is forfeit no matter what we do.
+#
+#    This inverts the optimisation. Levers 1-4 in section D exist to stretch
+#    the credit across more months. There are no more months. Shaving $7.30/mo
+#    saves ~$8 total before the cliff - not worth one hour of anyone's time,
+#    and lever 3 (in-cluster Postgres) would trade away PITR to save ~$18 total.
+#    DO NOT TAKE THE SECTION D LEVERS. Optimise for a working platform, not for
+#    a runway that does not exist.
+#
+#    WHAT MATTERS INSTEAD: on 2026-09-12 this subscription silently converts to
+#    Pay-As-You-Go and charges the card on file. There is no spending limit -
+#    the setting does not exist on this offer - and Azure Cost Management does
+#    not support quotaId Sponsored_2016-01-01, so budget.tf may never fire.
+#    The only real guardrail is a dated calendar entry plus a rehearsed
+#    `terraform destroy`. See ./EXPIRY.md.
+#
+# 2. REGION IS northcentralus, NOT eastus.
+#    East US is closed to this subscription - every candidate VM SKU returns
+#    restriction reasonCode NotAvailableForSubscription. Prices for the SKUs
+#    used here are identical in both regions, so the unit figures below still
+#    hold.
+#
+# 3. NODE SKU IS Standard_D4as_v5 ($125.56), NOT Standard_B2as_v2 ($54.90).
+#    So: line 25 "$54.90", the "$85.35 subtotal", the "$109.61 - $124.21"
+#    totals in section C, and the section D arithmetic are all understated by
+#    $70.66/mo. Corrected steady state is ~$184/mo. Reason for the change is on
+#    var.system_node_vm_size - a 4-data-disk cap and invisible burst-credit
+#    starvation, neither of which is a cost question.
+###############################################################################
+
+###############################################################################
 # COST MODEL
 #
 # Every figure below is a REAL East US retail price pulled from the public Azure
@@ -156,7 +200,14 @@
 
 locals {
   # ---- Verified East US retail unit prices, 2026-08-09 --------------------- #
-  price_b2as_v2_per_month   = 54.90 # Standard_B2as_v2, Linux, PAYG
+  # Standard_D4as_v5 (4 vCPU / 16 GiB), Linux, PAYG, verified via
+  # prices.azure.com 2026-08-09. North Central US pricing matches East US.
+  #
+  # SUPERSEDES price_b2as_v2_per_month = 54.90. The B-series was abandoned for
+  # two verified reasons (see var.system_node_vm_size): a 4-data-disk cap that
+  # the platform PVCs consume entirely, and burstable credit starvation that
+  # raises no node condition and is therefore invisible to every soak check.
+  price_d4as_v5_per_month   = 125.56
   price_b2ls_v2_spot_month  = 27.33 # Standard_B2ls_v2 Spot ($0.03744/h)
   price_public_ip_per_month = 3.65  # Standard static IPv4 ($0.005/h)
   price_private_dns_zone    = 0.50  # per zone, first 25
@@ -183,7 +234,7 @@ locals {
   )
 
   # ---- Steady-state monthly cost of what THIS configuration creates -------- #
-  cost_compute_system   = local.price_b2as_v2_per_month * var.system_node_min_count
+  cost_compute_system   = local.price_d4as_v5_per_month * var.system_node_min_count
   cost_os_disk_system   = local.system_os_disk_cost * var.system_node_min_count
   cost_compute_spot     = local.price_b2ls_v2_spot_month * var.spot_node_min_count
   cost_postgres_storage = var.postgres_storage_mb / 1024 * local.price_pg_storage_per_gib
