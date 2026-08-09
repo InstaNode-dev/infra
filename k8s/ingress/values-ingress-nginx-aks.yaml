@@ -30,14 +30,23 @@ controller:
       service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: /healthz
       # Internal LB? No — this is the public entrypoint.
       service.beta.kubernetes.io/azure-load-balancer-internal: "false"
-      # ⚠️ OPERATOR / TERRAFORM: uncomment BOTH and fill from Terraform outputs.
-      # A static Public IP is not optional here: with a dynamic IP, Azure
-      # reassigns on every LB recreate, and every DNS record plus Let's Encrypt
-      # validation breaks with no error anyone will see until a cert expires.
-      # The resource-group annotation is required whenever the IP lives in the
-      # cluster's *node* resource group rather than the MC_* group AKS manages.
-      # service.beta.kubernetes.io/azure-load-balancer-resource-group: <ip-resource-group>
-    # loadBalancerIP: <static public IP from Terraform>
+      # FILLED 2026-08-09 from `terraform output` after the apply.
+      #
+      # A static Public IP is not optional: with a dynamic IP Azure reassigns on
+      # every LB recreate, and every DNS record plus Let's Encrypt validation
+      # breaks with no error anyone will see until a cert expires.
+      #
+      # The resource-group annotation is REQUIRED because the IP lives in
+      # rg-instanode-prod-northcentralus (created by Terraform), NOT in the
+      # MC_* node resource group AKS manages for itself. Omit it and the
+      # Service sits at EXTERNAL-IP <pending> indefinitely — AKS looks for the
+      # IP in its own resource group, does not find it, and reports nothing
+      # useful. That is the single most common AKS ingress failure.
+      service.beta.kubernetes.io/azure-load-balancer-resource-group: rg-instanode-prod-northcentralus
+    # Static IP provisioned by infra/azure/public-ip.tf.
+    # `terraform output ingress_public_ip` is the source of truth; if this value
+    # and that output ever disagree, the output wins.
+    loadBalancerIP: 64.236.201.232
 
     # Preserve the client source IP. The api derives its anonymous-abuse
     # fingerprint from SHA256(/24 subnet + ASN) (CLAUDE.md rule 6); under the
