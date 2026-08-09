@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Terraform — infra/azure
+#
+# State for the ROOT configuration lives in Azure Storage (see versions.tf), so
+# no *.tfstate should ever appear here. These rules are the backstop for the
+# bootstrap/ local state, for `-backend=false` validation runs, and for anyone
+# who comments out the backend block.
+#
+# THE RULE THAT MATTERS: root state contains the PostgreSQL admin password in
+# plaintext, and *.tfvars would contain it too. Neither is ever committed.
+# ---------------------------------------------------------------------------
+
+# State — may contain the PostgreSQL admin password in plaintext
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+terraform.tfstate.d/
+
+# Variable files — may contain the PostgreSQL admin password
+*.tfvars
+*.tfvars.json
+# ...but keep the committed templates, which contain only placeholders
+!*.tfvars.example
+!terraform.tfvars.example
+
+# Backend configuration — contains account names, and is environment-specific
+backend.hcl
+!backend.hcl.example
+
+# Provider plugins and module cache
+.terraform/
+.terraform.lock.hcl.tmp
+
+# Saved plans — a plan file embeds variable values, including secrets
+*.tfplan
+*.tfplan.*
+plan.out
+
+# Crash logs may contain state fragments
+crash.log
+crash.*.log
+
+# Editor / OS noise
+*.swp
+.DS_Store

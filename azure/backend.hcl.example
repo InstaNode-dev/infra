@@ -1,0 +1,24 @@
+# Backend configuration for the root Terraform configuration.
+#
+# Generate this file rather than editing it by hand:
+#
+#     cd bootstrap
+#     terraform output -raw backend_hcl > ../backend.hcl
+#
+# Then, from infra/azure:
+#
+#     terraform init -backend-config=backend.hcl
+#
+# backend.hcl is gitignored (it names a specific storage account); this .example
+# is committed so the shape is discoverable.
+
+resource_group_name  = "rg-instanode-tfstate"
+storage_account_name = "stinstanodetfstateXXXXXX"
+container_name       = "tfstate"
+key                  = "instanode-prod.tfstate"
+
+# Authenticate to the blob with Entra RBAC instead of a shared account key, so
+# no storage key ever lands in a config file or a CI secret. The principal
+# running Terraform needs "Storage Blob Data Contributor" on the account —
+# subscription Owner alone is NOT sufficient for data-plane blob access.
+use_azuread_auth = true

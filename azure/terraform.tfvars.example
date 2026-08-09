@@ -1,0 +1,96 @@
+###############################################################################
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# NEVER put postgres_admin_password in this file, even locally. Export it
+# instead, so it cannot be committed by accident and does not sit on disk:
+#
+#   export TF_VAR_postgres_admin_password="$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)"
+#
+# Store that generated password in the password manager BEFORE running apply.
+# It is needed again in Phase 3 to build the k8s Secret, and Azure will not
+# show it to you afterwards.
+###############################################################################
+
+# --------------------------------------------------------------------------- #
+# Required
+# --------------------------------------------------------------------------- #
+
+# The subscription carrying the $1,000 Founders Hub credit.
+# This is an identifier, not a credential, but ARM_SUBSCRIPTION_ID is still
+# preferred so this file stays empty of environment specifics:
+#   export ARM_SUBSCRIPTION_ID=73ae3d2a-5847-48f2-bcea-10bd3e1914f6
+subscription_id = "73ae3d2a-5847-48f2-bcea-10bd3e1914f6"
+
+# --------------------------------------------------------------------------- #
+# Commonly adjusted
+# --------------------------------------------------------------------------- #
+
+# project     = "instanode"
+# environment = "prod"
+# location    = "eastus"
+
+# Optional hostname at <label>.eastus.cloudapp.azure.com, free. Useful for
+# verifying ingress and cert-manager in Phases 6-9 BEFORE cutting Cloudflare DNS
+# over in Phase 8. Must be globally unique within the region.
+# public_ip_dns_label = "instanode-prod"
+
+# --------------------------------------------------------------------------- #
+# Cost levers (see costs.tf section D)
+# --------------------------------------------------------------------------- #
+
+# 32 GiB OS disk = P4 ($5.28/mo) instead of 64 GiB = P6 ($10.21/mo).
+# Saves $4.93/mo, leaves ~25 GiB of image cache.
+# system_node_os_disk_size_gb = 32
+
+# Ceiling for the system pool autoscaler. Each node above the first adds
+# $54.90/mo + $10.21/mo OS disk while it exists.
+# system_node_max_count = 3
+
+# DO NOT raise above 1 without first obtaining a Low-priority vCPU quota
+# increase for East US. Measured quota is 3 vCPU and Standard_B2ls_v2 is 2 vCPU.
+# See QUOTA.md.
+# spot_node_max_count = 1
+
+# --------------------------------------------------------------------------- #
+# Observability — leave OFF unless you have read the arithmetic
+# --------------------------------------------------------------------------- #
+
+# Container Insights ingests 1-3 GB/day on a small cluster at $2.30/GB, i.e.
+# $69-$207/mo — up to twice the entire platform budget. The platform already
+# ships telemetry to New Relic.
+# enable_container_insights    = false
+# log_analytics_daily_quota_gb = 1
+
+# --------------------------------------------------------------------------- #
+# Cost guardrail
+# --------------------------------------------------------------------------- #
+
+# OFF by default: this is an Azure Sponsorship subscription
+# (quotaId Sponsored_2016-01-01) and Cost Management support on Sponsorship is
+# inconsistent, so budget creation is unverified. Confirm Cost Analysis shows
+# real data first, then enable. See budget.tf.
+# enable_cost_budget    = true
+# monthly_budget_amount = 100
+# budget_alert_emails   = ["you@example.com"]
+# budget_start_date     = "2026-08-01T00:00:00Z"
+
+# --------------------------------------------------------------------------- #
+# Rarely changed
+# --------------------------------------------------------------------------- #
+
+# NetworkPolicy engine. THIS CANNOT BE CHANGED WITHOUT REPLACING THE CLUSTER.
+# "cilium" (default) | "calico" | "azure"
+# network_policy_engine = "cilium"
+
+# Leave null to take the AKS default for the region at create time.
+# kubernetes_version = "1.31"
+
+# Only set if the PostgreSQL server name collides globally.
+# name_suffix = "01"
+
+# tags = {
+#   owner       = "platform"
+#   cost_center = "founders-hub-credit"
+# }
