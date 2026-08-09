@@ -51,27 +51,49 @@ spec:
               cpu: "100m"
             limits:
               memory: "1Gi"
+          # CREDENTIALS FROM SECRET (2026-08-09, security forum finding F-3, P0).
+          #
+          # This manifest previously shipped a literal root/root, in both the
+          # env block and the readiness probe below. On a multi-tenant platform
+          # whose customer MongoDB instances are provisioned against this very
+          # pod, root/root is a default credential on the admin database — and
+          # the AKS port commit edited this file and changed only
+          # storageClassName, so it would have shipped verbatim onto the new
+          # cluster.
+          #
+          # Values live in Secret `instant-data-secrets` (namespace
+          # instant-data), which is ALSO newly created — it was referenced by
+          # postgres-customers.yaml:82 but defined in no manifest anywhere, so
+          # postgres-customers could never have started.
           env:
             - name: MONGO_INITDB_ROOT_USERNAME
-              value: root
+              valueFrom:
+                secretKeyRef:
+                  name: instant-data-secrets
+                  key: MONGO_ROOT_USERNAME
             - name: MONGO_INITDB_ROOT_PASSWORD
-              value: root
+              valueFrom:
+                secretKeyRef:
+                  name: instant-data-secrets
+                  key: MONGO_ROOT_PASSWORD
           volumeMounts:
             - name: mongodb-data
               mountPath: /data/db
           readinessProbe:
             exec:
+              # `sh -c` so $MONGO_INITDB_ROOT_* expand from the container env.
+              # An exec probe's argv is NOT shell-expanded, so writing
+              # `--password $(VAR)` here would authenticate with the literal
+              # string "$(VAR)" and the probe would fail closed forever.
               command:
-                - mongosh
-                - --eval
-                - "db.adminCommand('ping')"
-                - --username
-                - root
-                - --password
-                - root
-                - --authenticationDatabase
-                - admin
-                - --quiet
+                - sh
+                - -c
+                - >-
+                  mongosh --quiet
+                  --username "$MONGO_INITDB_ROOT_USERNAME"
+                  --password "$MONGO_INITDB_ROOT_PASSWORD"
+                  --authenticationDatabase admin
+                  --eval "db.adminCommand('ping')"
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5

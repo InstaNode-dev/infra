@@ -81,6 +81,35 @@ spec:
                 secretKeyRef:
                   name: instant-data-secrets
                   key: CUSTOMER_DB_PASSWORD
+            # PGDATA IN A SUBDIRECTORY (added 2026-08-09, AKS port).
+            #
+            # Found by the first apply on AKS, not by review — postgres-customers
+            # went CrashLoopBackOff with:
+            #
+            #   initdb: error: directory "/var/lib/postgresql/data" exists but
+            #           is not empty
+            #   initdb: detail: It contains a lost+found directory, perhaps due
+            #           to it being a mount point.
+            #
+            # Azure managed-csi formats volumes as ext4, which creates a
+            # lost+found at the filesystem root. The volume is mounted directly
+            # at /var/lib/postgresql/data, so initdb sees a non-empty directory
+            # and refuses to initialise. This is a REAL DO->Azure portability
+            # difference: the DigitalOcean CSI volumes this manifest was written
+            # against did not surface lost+found the same way, so the manifest
+            # worked there and fails here.
+            #
+            # Pointing PGDATA at a subdirectory of the mount is the documented
+            # fix and is also what the postgres image's own hint recommends.
+            # It costs nothing and is correct on every CSI driver.
+            #
+            # NOTE this only works on a FRESH volume. Repointing PGDATA on a
+            # volume that already holds a cluster at the mount root would
+            # silently initialise a second, empty database and appear to
+            # succeed. There is no data here (greenfield, zero customers), so
+            # it is safe now — it would not be later.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           volumeMounts:
             - mountPath: /var/lib/postgresql/data
               name: data

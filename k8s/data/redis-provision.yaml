@@ -38,16 +38,40 @@ spec:
           image: redis:7-alpine
           ports:
             - containerPort: 6379
+          # AUTH ADDED 2026-08-09 (security forum finding F-3, P0).
+          #
+          # This pod previously ran with NO --requirepass at all: any pod that
+          # could reach port 6379 had full, unauthenticated command access —
+          # including FLUSHALL and CONFIG — to the Redis instance backing every
+          # customer cache. The AKS port commit edited this file and changed
+          # only storageClassName, so it would have shipped that way.
+          #
+          # `sh -c` is required so $REDIS_PROVISION_PASSWORD expands: a
+          # container `command` argv is not shell-processed, so passing
+          # `--requirepass $(VAR)` would set the literal string "$(VAR)" as the
+          # password — which "works" until something tries to authenticate.
+          #
+          # Defence in depth, not the only control: data/networkpolicy.yaml
+          # restricts ingress to this pod. A NetworkPolicy is one apply away
+          # from being absent, and this platform has a documented case of
+          # exactly that (POSTGRES-CUSTOMERS-LOCKDOWN-RUNBOOK.md finding L4:
+          # a policy written and never applied in prod).
           command:
-            - redis-server
-            - --maxmemory
-            - 256mb
-            - --maxmemory-policy
-            - allkeys-lru
-            - --appendonly
-            - "yes"
-            - --dir
-            - /data
+            - sh
+            - -c
+            - >-
+              exec redis-server
+              --requirepass "$REDIS_PROVISION_PASSWORD"
+              --maxmemory 256mb
+              --maxmemory-policy allkeys-lru
+              --appendonly yes
+              --dir /data
+          env:
+            - name: REDIS_PROVISION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: instant-data-secrets
+                  key: REDIS_PROVISION_PASSWORD
           # R7 (2026-06-10): requests added so this pod is Burstable, not
           # BestEffort — BestEffort is the FIRST thing evicted under the
           # cluster's memory overcommit. request 128Mi covers idle + small
@@ -66,7 +90,12 @@ spec:
               mountPath: /data
           readinessProbe:
             exec:
-              command: ["redis-cli", "ping"]
+              # Must authenticate now that --requirepass is set; a bare
+              # `redis-cli ping` returns NOAUTH and the pod never goes Ready.
+              command:
+                - sh
+                - -c
+                - redis-cli -a "$REDIS_PROVISION_PASSWORD" --no-auth-warning ping
             initialDelaySeconds: 3
             periodSeconds: 5
       volumes:
