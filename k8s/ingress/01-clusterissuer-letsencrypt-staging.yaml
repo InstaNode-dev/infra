@@ -1,0 +1,80 @@
+---
+# letsencrypt-staging ClusterIssuer — USE THIS UNTIL THE DNS CUTOVER.
+#
+# ADDED 2026-08-09 per forum ruling D5 (docs/sessions/2026-08-09/FORUM-SYNTHESIS.md).
+#
+# WHY THIS EXISTS
+#
+# Let's Encrypt's PRODUCTION endpoint enforces a hard rate limit of
+# **50 certificates per registered domain per week**. `instanode.dev` is one
+# registered domain, and this platform issues a SEPARATE certificate for every
+# customer deploy under *.deployment.instanode.dev — the api stamps
+# `cert-manager.io/cluster-issuer` onto each per-deploy Ingress it creates.
+#
+# So the production issuer is a consumable resource shared between "debugging
+# the migration" and "customers being able to deploy". Burning it during
+# bring-up — when misconfiguration means repeated failed issuance — would leave
+# the platform unable to issue customer certs for up to a week, with no way to
+# buy back the quota.
+#
+# The staging endpoint has vastly higher limits and issues from an untrusted
+# root. Browsers show a warning; cert-manager's mechanics are otherwise
+# IDENTICAL. That is exactly what phases 2–9 need: proof that issuance WORKS,
+# without spending production quota to learn it.
+#
+# THE ORDERING PROBLEM THIS ALSO SOLVES
+#
+# HTTP-01 validation requires the challenged hostname to resolve to THIS
+# cluster's ingress. Until the DNS cutover, `api.instanode.dev` still resolves
+# to the DigitalOcean load balancer (152.42.154.144), so a production-issuer
+# challenge for that name cannot succeed and every attempt burns quota against
+# the weekly cap.
+#
+# Verification during phases 2–9 therefore runs against a PARALLEL hostname
+# (`az.instanode.dev`) pointed at the new ingress IP, using this staging issuer.
+# Production DNS moves exactly once, after the gates are green.
+#
+# HOW TO USE IT
+#
+#   Phases 2–9   annotate test Ingresses with:
+#                  cert-manager.io/cluster-issuer: letsencrypt-staging
+#                Assert issuance SUCCEEDS and the issuer chain says
+#                "(STAGING) Let's Encrypt" — a staging cert proves the
+#                mechanism; it does NOT satisfy verification gate 2.4.
+#
+#   At cutover   switch to `letsencrypt-http01` (00-clusterissuer-*.yaml),
+#                delete the staging-issued Secrets so cert-manager re-issues
+#                from production, and THEN assert gate 2.4: the issuer chain
+#                must contain a real Let's Encrypt intermediate and must NOT
+#                contain "(STAGING)" or "Kubernetes Ingress Controller Fake
+#                Certificate".
+#
+# ⚠️ A STAGING CERT MUST NEVER SATISFY A PRODUCTION GATE. It is trusted by
+# nothing. Gate 2.4 asserts on the ISSUER STRING precisely so that a staging
+# cert, a self-signed cert, and the ingress-nginx fake cert all FAIL it — all
+# three serve HTTPS and return 200 while being worthless to a real user.
+#
+# PREREQUISITE: cert-manager installed (namespace cert-manager, CRDs present).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    # Staging directory — untrusted root, high rate limits.
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+
+    # Operator address. Let's Encrypt sends expiry warnings and rate-limit
+    # notices here, so it must be a mailbox that is actually read. Deliberately
+    # NOT noreply@instanode.dev: platform email delivery is a known-broken P0
+    # (Brevo rejects every send), so a notice sent there would be silently
+    # dropped — the exact failure class this migration keeps finding.
+    email: mastermanas805@gmail.com
+
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx

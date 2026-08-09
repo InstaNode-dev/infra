@@ -39,9 +39,16 @@ metadata:
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
-    # ⚠️ OPERATOR: replace before applying. Let's Encrypt sends expiry warnings
-    # and rate-limit notices here. A CHANGE_ME address makes registration fail.
-    email: CHANGE_ME@instanode.dev
+    # Operator address, set 2026-08-09. Let's Encrypt sends expiry warnings and
+    # rate-limit notices here, so it must be a mailbox that is actually read.
+    #
+    # Deliberately NOT an @instanode.dev address: platform email delivery is a
+    # known-broken P0 (the Brevo sender was never validated, so every send is
+    # accepted with a 201 and then internally rejected). A rate-limit warning
+    # sent to noreply@instanode.dev would be silently dropped — which is how
+    # you discover the 50-cert/week cap by having customer deploys stop getting
+    # certificates, rather than by reading the warning.
+    email: mastermanas805@gmail.com
     # Private key for the ACME account. cert-manager creates this Secret; do not
     # pre-create it. Losing it just means a new ACME account, not lost certs.
     privateKeySecretRef:
