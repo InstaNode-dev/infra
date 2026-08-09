@@ -5,6 +5,11 @@
 > `instant-api:local`, and added a `wait-for-platform-db` init container
 > that blocks forever in prod. See "What went wrong" at the bottom.
 
+> **Building a cluster from scratch?** This file is for **in-place updates to a
+> running cluster**. For a clean AKS bring-up, start at
+> [§ AKS clean-cluster bring-up](#aks-clean-cluster-bring-up-2026-08-09) at the
+> bottom, which owns the ordering; then come back here for subsequent updates.
+
 This checklist applies to:
 
 - `infra/k8s/app.yaml` — `Deployment/instant-api` in namespace `instant`
@@ -57,9 +62,10 @@ apply is a deliberate, human-driven step.
    exist in prod are removed from the base manifest.** The legacy
    `wait-for-platform-db` (and provisioner's `wait-for-provisioner-db`)
    init containers expected an in-cluster `postgres-platform` /
-   `postgres-provisioner` Service. Prod uses DigitalOcean Managed
-   Postgres — those Services do not exist. Init containers would block
-   pod startup indefinitely.
+   `postgres-provisioner` Service. Prod uses EXTERNAL managed Postgres
+   (Azure Database for PostgreSQL Flexible Server since 2026-08-09; DO
+   Managed Postgres before that) — those Services do not exist. Init
+   containers would block pod startup indefinitely.
 
    For local dev (Rancher Desktop / k3s with an in-cluster postgres pod),
    layer a kustomize overlay or just patch the init container in by hand:
@@ -91,7 +97,11 @@ apply is a deliberate, human-driven step.
 ```bash
 # 1. Confirm context
 kubectl config current-context
-# Expected: do-nyc3-instant-prod (for prod) or rancher-desktop (for local)
+# Expected: instanode-prod-aks (for prod) or rancher-desktop (for local).
+# ⚠️ The retired DO context was `do-nyc3-instant-prod`. If you still see it,
+#    your kubeconfig is stale — it points at a cluster that no longer exists
+#    and every command below will hang on the dead doctl exec-credential
+#    plugin. `kubectl config delete-context do-nyc3-instant-prod`.
 
 # 2. Dry-run server-side (validates against the real API server, surfaces
 #    schema errors AND shows what would change without changing anything)
@@ -176,14 +186,24 @@ of silently regressing.
 
 ---
 
-## MinIO retirement (2026-05-20)
+## MinIO retirement (2026-05-20) — superseded 2026-08-09
+
+> **SUPERSEDED:** DO Spaces was itself retired on 2026-08-09 with the Azure
+> move. **Cloudflare R2 is now the canonical production object store**
+> (`OBJECT_STORE_BACKEND=r2`). Azure Blob is deliberately not used: it is not
+> S3-compatible, and none of the four coded providers in
+> `common/storageprovider/` speak it. R2 is also an *upgrade* in tenant
+> isolation — genuine prefix-scoped credentials + STS, versus the synthesised
+> prefix isolation over a shared master key that Spaces forced. The section
+> below is retained as the history of how MinIO was removed.
 
 The self-hosted MinIO Deployment in `instant-data` was retired in
 `chore/retire-self-hosted-minio-2026-05-20` (supersedes the stale PR #4
 from 2026-05-11). DO Spaces (`nyc3.digitaloceanspaces.com`, bucket
-`instant-shared`) is the canonical production object-store backend, selected
-by `OBJECT_STORE_BACKEND=do-spaces` in `instant-secrets` (and mirrored to
-`instant-infra-secrets` for worker + provisioner storage_bytes scanners).
+`instant-shared`) was then the canonical production object-store backend,
+selected by `OBJECT_STORE_BACKEND=do-spaces` in `instant-secrets` (and
+mirrored to `instant-infra-secrets` for worker + provisioner storage_bytes
+scanners).
 
 After this PR merges, run the following on the prod cluster (and on any
 local Rancher Desktop clusters that still have the legacy MinIO workload
@@ -283,7 +303,7 @@ above apply to a ClusterRole/ClusterRoleBinding/ServiceAccount file).
 
 ```bash
 # 1. Confirm context
-kubectl config current-context        # expect do-nyc3-instant-prod
+kubectl config current-context        # expect instanode-prod-aks
 
 # 2. Dry-run server-side and read the diff (RBAC verbs only should change)
 kubectl apply --dry-run=server -f k8s/worker-rbac.yaml
@@ -366,8 +386,98 @@ Rollback: `kubectl delete -f k8s/newrelic-prometheus-agent.yaml
 
 ---
 
+## AKS clean-cluster bring-up (2026-08-09)
+
+The DigitalOcean → Azure move is a **greenfield rebuild with zero customers**,
+which makes it the one chance to get the repo back to being authoritative. The
+rule for the Azure cluster is: **everything applied comes from a manifest in
+`infra/`; nothing is hand-patched.** Every hand-patch is a future 2026-05-20
+near-miss.
+
+### Order (this is what `apply-all.sh` encodes — read it, it is the runbook)
+
+| # | Step | File / command | Why here |
+|---|---|---|---|
+| 0 | Cluster + node pools + Postgres Flexible Server + static IP | Terraform (`infra/azure/`, owned elsewhere) | — |
+| 1 | cert-manager, then ingress-nginx | Helm — `k8s/ingress/README.md` | CRDs must exist before the ClusterIssuer; the LB IP is needed before DNS |
+| 2 | DNS A records → LB IP, **DNS-only / grey cloud** | Cloudflare | HTTP-01 cannot validate until the name resolves publicly |
+| 3 | Namespaces | `k8s/namespace.yaml` | everything below is namespaced |
+| 4 | RBAC | `deploy-rbac.yaml`, `instant-namespace-rbac.yaml`, `worker-rbac.yaml`, `provisioner/rbac.yaml`, `ci-deployer-rbac.yaml` | a Deployment naming a missing ServiceAccount produces pods that are never admitted |
+| 5 | Secrets + ConfigMaps + GHCR pull secrets | `secrets.yaml`, `infra-secrets.yaml`, `configmap.yaml`, `migrations-configmap.yaml` | an unresolvable `secretKeyRef` is `CreateContainerConfigError` and does not self-heal without a restart |
+| 6 | Data tier | `data/stateful-priority.yaml` → `data/postgres-customers-lockdown.yaml` → the four workloads → `data/networkpolicy.yaml` | PriorityClass is cluster-scoped and must pre-exist; the pg_hba ConfigMap is `subPath`-mounted by postgres-customers, so it must exist before that pod starts |
+| 7 | Platform services | `redis.yaml`, `provisioner/`, `app.yaml`, `worker/`, `website.yaml`, `nats-proxy/` | — |
+| 8 | Ingress + ClusterIssuer | `k8s/ingress/` | after DNS (step 2), or Let's Encrypt rate limit is burned on failed validations |
+| 9 | Metrics pipeline | `newrelic-prometheus-agent.yaml` (real secret FIRST) | without it every `FROM Metric` NR alert is inert |
+| 10 | CI | mint `ci-deployer` kubeconfig → `KUBECONFIG_B64` in api/worker/provisioner/infra | then rule 14: `/healthz commit_id` == `git rev-parse --short HEAD` |
+
+### AKS-specific gotchas that bite silently
+
+- **`local-path` does not exist on AKS.** It is the k3s/Rancher-Desktop
+  provisioner. A PVC naming it sits `Pending` forever with no error on the pod
+  — you only see it in `kubectl describe pvc`. All PVCs in this repo now name
+  `managed-csi` explicitly. Never reintroduce `local-path` outside a local-dev
+  overlay.
+- **NetworkPolicy is accepted but NOT enforced unless a policy engine was
+  enabled at cluster creation.** `kubectl get networkpolicy` will happily list
+  all four data-tier policies on a cluster that ignores every one of them.
+  This is the worst failure mode available: security theatre that reads green.
+  Verify, do not assume:
+  ```bash
+  az aks show -g <rg> -n <cluster> --query networkProfile.networkPolicy -o tsv
+  # must print cilium | azure | calico — NOT null
+  ```
+  It cannot be added later without recreating the cluster (or a constrained
+  migration path), so it is a **required Terraform input**.
+- **CPU, not memory, is the binding constraint** on the single
+  `Standard_B2as_v2`. Measured from the manifests: ~1.65 vCPU of ~1.9
+  allocatable requested (~87%) against only ~2.3 GiB of ~5.5 GiB (~41%). A
+  Kaniko build that lands on the *system* node overcommits CPU. That is the
+  entire reason the Spot pool exists — and it is inert until the api stamps
+  the toleration (see `k8s/spot/README.md`). Budget CPU, not RAM.
+- **Do not apply `postgres-platform.yaml` on Azure.** It is local-dev only;
+  prod platform Postgres is the external Flexible Server. `apply-all.sh` gates
+  it behind `LOCAL_DEV=1`.
+- **`migrator/` is not bring-up ready** (`instant-migrator:local` +
+  `imagePullPolicy: Never`, plus a Temporal dependency this bring-up does not
+  install). See the header of `migrator/deployment.yaml`.
+
+### Post-bring-up verification gate
+
+```bash
+kubectl get pods -A | grep -Ev 'Running|Completed'   # expect no rows
+kubectl get pvc -A                                    # all Bound
+kubectl get certificate -n instant                    # Ready=True
+curl -sS https://api.instanode.dev/healthz | jq '.commit_id, .migration_version'
+curl -sS https://api.instanode.dev/readyz  | jq .
+```
+
+Then the two gates that actually prove the platform works (rules 13 + 14) —
+neither is satisfied by a log grep:
+
+```bash
+# a real database, connected to for real
+TOKEN=$(curl -sS -XPOST https://api.instanode.dev/db/new | jq -r .connection_url)
+psql "$TOKEN" -c 'select 1;'
+
+# a real deploy, reachable over real TLS (NOT the ingress fake cert)
+curl -sSI https://<app-id>.deployment.instanode.dev | head -1
+echo | openssl s_client -connect <app-id>.deployment.instanode.dev:443 2>/dev/null \
+  | openssl x509 -noout -issuer     # must be Let's Encrypt, NOT
+                                    # "Kubernetes Ingress Controller Fake Certificate"
+```
+
+That last check is the one that matters most: the live DO cluster was found
+serving the ingress-nginx fake certificate, which is exactly the state this
+rebuild exists to not recur.
+
+---
+
 ## Related files
 
+- `k8s/ingress/README.md` — cert-manager + ingress-nginx install, the
+  DNS-before-certificate ordering trap, and the L4 (`tcp:`) port map
+- `k8s/spot/README.md` — the Spot node pool scheduling contract and the
+  api-side follow-up it depends on
 - `README.md` — secrets clobber warning (the same class of bug, but for
   the `secrets.yaml` template)
 - `scripts/safe-secret-apply.sh` — runtime guardrail against

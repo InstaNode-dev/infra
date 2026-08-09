@@ -1,0 +1,61 @@
+---
+# api.instanode.dev → instant-api.
+#
+# ADDED 2026-08-09 (AKS port). k8s/app.yaml:435 has referenced
+# "infra/k8s/api-ingress.yaml" since the Service was flipped to ClusterIP on
+# 2026-05-11, but no such file was ever committed — the live Ingress existed
+# only as a hand-applied object on the DO cluster. On a greenfield cluster that
+# means the api has NO public entrypoint at all: the Service is ClusterIP, so
+# without this the only way in is `kubectl port-forward`.
+#
+# Every third-party integration keys off this exact hostname and none of them
+# need re-registration for the cloud move (migration plan §6.3): the GitHub
+# OAuth callback, the Razorpay webhook, the Brevo delivery webhook
+# (/webhooks/brevo/:secret) and the CLI device-flow host. Only the A record
+# moves.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: instant-api
+  namespace: instant
+  labels:
+    app: instant-api
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-http01
+    # ── proxy-body-size ──────────────────────────────────────────────────────
+    # THE load-bearing annotation on this object. `POST /deploy/new` is a
+    # multipart upload of the customer's build-context tarball. ingress-nginx
+    # defaults `proxy-body-size` to 1m, so without this every deploy larger
+    # than 1 MiB fails with a bare `413 Request Entity Too Large` from nginx —
+    # the request never reaches the api, so there is no audit_log row, no
+    # deployment row, and no failure email. It looks like the deploy wedge is
+    # silently broken. 64m covers a realistic source tree with node_modules
+    # excluded; raise if real uploads approach it.
+    nginx.ingress.kubernetes.io/proxy-body-size: "64m"
+    # Kaniko builds are orchestrated synchronously inside the /deploy/new
+    # handler, and provisioning is synchronous by design (CLAUDE.md rule 2).
+    # The nginx default of 60s would cut the connection mid-build and surface
+    # as a 504 to the agent while the build carries on server-side.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # Redirect http→https. The ACME HTTP-01 challenge path is exempted by
+    # cert-manager's own solver Ingress, so this does not break issuance.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.instanode.dev
+      # cert-manager creates + renews this Secret. Do not pre-create it.
+      secretName: api-instanode-dev-tls
+  rules:
+    - host: api.instanode.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: instant-api
+                port:
+                  number: 8080

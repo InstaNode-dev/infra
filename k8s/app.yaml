@@ -19,7 +19,15 @@ metadata:
     # any delete-old-versions workflow that targets prod tags.
     instanode.dev/image-pin-retention-days: "730"
 spec:
-  replicas: 2
+  # AKS (2026-08-09 DO→Azure port): 2 → 1.
+  # The Azure footprint is a SINGLE Standard_B2as_v2 system node (autoscale
+  # 1→3, but 1 at rest). Two replicas on one node share a fate domain — they
+  # buy zero availability and cost a second 256Mi/250m of an ~1.9 vCPU /
+  # ~5.5 GiB allocatable budget. The podAntiAffinity below is `preferred`, so
+  # on a 1-node cluster both pods land on that node anyway.
+  # Scale back to 2 the moment a second node is permanently present; the
+  # graceful-shutdown budget below (35s) already assumes rolling replacement.
+  replicas: 1
   selector:
     matchLabels:
       app: instant-api
@@ -62,9 +70,10 @@ spec:
         - name: ghcr-pull
         - name: ghcr-org-pull
       # NOTE — wait-for-platform-db initContainer intentionally absent.
-      # Prod runs against DigitalOcean Managed Postgres (no in-cluster
-      # `postgres-platform` Service); the init container would block
-      # pod startup forever. For local dev (Rancher Desktop / k3s with
+      # Prod runs against EXTERNAL managed Postgres — Azure Database for
+      # PostgreSQL Flexible Server since 2026-08-09, DigitalOcean Managed
+      # Postgres before that — so there is no in-cluster `postgres-platform`
+      # Service and the init container would block pod startup forever. For local dev (Rancher Desktop / k3s with
       # an in-cluster postgres-platform Service), use the
       # `local-dev-overlay.yaml` overlay alongside this file. See
       # APPLY-CHECKLIST.md.
@@ -252,11 +261,16 @@ spec:
                   key: GOOGLE_CLIENT_ID
                   optional: true
             # ── Object-store backend (storage abstraction, 2026-05-20) ────────
-            # OBJECT_STORE_BACKEND selects the impl: do-spaces (prod today),
-            # r2, or s3. The rest are backend-specific. See
-            # common/storageprovider/factory.go. The self-hosted MinIO backend
-            # was retired 2026-05-20 — DO Spaces (`nyc3.digitaloceanspaces.com`,
-            # bucket `instant-shared`) is the canonical production backend.
+            # OBJECT_STORE_BACKEND selects the impl: r2 (prod), do-spaces,
+            # or s3. The rest are backend-specific. See
+            # common/storageprovider/factory.go. Self-hosted MinIO was retired
+            # 2026-05-20 (→ DO Spaces); DO Spaces was retired 2026-08-09 with
+            # the Azure move. **Cloudflare R2 is now the canonical production
+            # backend** — S3-compatible, $0 egress, and an upgrade in tenant
+            # isolation (genuine prefix-scoped credentials + STS, vs the
+            # synthesised prefix isolation over a shared master key that Spaces
+            # forced). Azure Blob is deliberately NOT used: it is not
+            # S3-compatible.
             - name: OBJECT_STORE_BACKEND
               valueFrom:
                 secretKeyRef:

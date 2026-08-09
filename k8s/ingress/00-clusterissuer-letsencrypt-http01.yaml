@@ -1,0 +1,52 @@
+---
+# letsencrypt-http01 ClusterIssuer.
+#
+# ADDED 2026-08-09 (AKS port). This object was referenced from THREE places but
+# existed in NO manifest in this repo — it only ever lived as a hand-applied
+# object on the DO cluster:
+#   - k8s/app.yaml            → env CERT_ISSUER: "letsencrypt-http01"
+#   - k8s/configmap.yaml      → CERT_ISSUER: "letsencrypt-http01"
+#   - the api at runtime      → stamps `cert-manager.io/cluster-issuer:
+#                               <CERT_ISSUER>` onto every per-deploy Ingress it
+#                               creates under *.deployment.instanode.dev
+# Without it, cert-manager logs `ClusterIssuer.cert-manager.io
+# "letsencrypt-http01" not found` and EVERY customer deploy gets an Ingress with
+# no certificate — the browser shows the ingress-nginx fake cert. That is
+# precisely the failure state the live DO cluster was found in (migration plan
+# §1: "serves CN=Kubernetes Ingress Controller Fake Certificate").
+#
+# PREREQUISITE: cert-manager installed (namespace cert-manager, CRDs present).
+#   helm repo add jetstack https://charts.jetstack.io
+#   helm install cert-manager jetstack/cert-manager -n cert-manager \
+#     --create-namespace --set crds.enabled=true
+#
+# HTTP-01 (not DNS-01) is correct here: every hostname this issues for
+# (api.instanode.dev, <id>.deployment.instanode.dev) is a CONCRETE host with an
+# A record pointing at the ingress LB, so the /.well-known/acme-challenge path
+# is reachable. HTTP-01 cannot issue WILDCARD certs — that is why the preview
+# environments use a separate DNS-01 issuer (`letsencrypt-preview-dns01`, see
+# k8s/preview/40-api-template.yaml). Per-deploy hostnames get their own
+# individual cert, so no wildcard is needed on this path.
+#
+# ⚠️ CLOUDFLARE PROXY: the A records for api / pg / redis / mongo / s3 /
+# *.deployment MUST stay DNS-only (grey cloud). An orange-clouded record
+# terminates TLS at Cloudflare, which breaks the HTTP-01 challenge round-trip
+# and every L4 (postgres/redis/mongo/nats) listener.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-http01
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    # ⚠️ OPERATOR: replace before applying. Let's Encrypt sends expiry warnings
+    # and rate-limit notices here. A CHANGE_ME address makes registration fail.
+    email: CHANGE_ME@instanode.dev
+    # Private key for the ACME account. cert-manager creates this Secret; do not
+    # pre-create it. Losing it just means a new ACME account, not lost certs.
+    privateKeySecretRef:
+      name: letsencrypt-http01-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx

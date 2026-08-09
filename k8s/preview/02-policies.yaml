@@ -9,7 +9,7 @@
 # closes the loop — the SA *can* call the API, but Kyverno will reject
 # any request that would land outside the preview-api-pr-* prefix.
 #
-# Pre-requisite: Kyverno must be installed on do-nyc3-instant-prod. If it
+# Pre-requisite: Kyverno must be installed on the target cluster. If it
 # is NOT installed, this manifest will fail apply (CRDs missing). The
 # operator runbook (PREVIEW-ENV-RUNBOOK.md) lists the install command.
 # Until Kyverno is up, the workflow script's pre-flight is the only guard.

@@ -14,7 +14,13 @@ metadata:
   annotations:
     instanode.dev/image-pin-retention-days: "730"
 spec:
-  replicas: 2
+  # AKS (2026-08-09 DO→Azure port): 2 → 1.
+  # The Azure footprint is a SINGLE Standard_B2as_v2 system node (autoscale
+  # 1→3, but 1 at rest). Two replicas on one node share a fate domain — they
+  # buy zero availability and cost a second copy of the RAM. The podAntiAffinity
+  # below is `preferred`, so on a 1-node cluster both pods land on that node
+  # anyway. Scale back to 2 the moment a second node is permanently present.
+  replicas: 1
   selector:
     matchLabels:
       app: instant-provisioner
@@ -47,9 +53,13 @@ spec:
       # bump doesn't silently shrink the budget.
       terminationGracePeriodSeconds: 30
       # NOTE — wait-for-provisioner-db initContainer intentionally absent.
-      # Prod runs against DigitalOcean Managed Postgres (the
-      # postgres-provisioner Service does not exist in `instant-infra`),
-      # and PROVISIONER_DATABASE_URL is the actual source-of-truth env var.
+      # Prod runs against EXTERNAL managed Postgres (the postgres-provisioner
+      # Service does not exist in `instant-infra`), and
+      # PROVISIONER_DATABASE_URL is the actual source-of-truth env var.
+      # AKS (2026-08-09): that URL now points at `provisioner_db`, a SECOND
+      # database on the SAME Azure Flexible Server as instant_platform — which
+      # retires the standalone unbacked Postgres droplet at 161.35.111.84
+      # (GAP-AUDIT R5 SPOF) for $0.
       # For local dev that does run an in-cluster postgres-provisioner pod,
       # use the local-dev overlay alongside this file. See APPLY-CHECKLIST.md.
       containers:
@@ -154,22 +164,38 @@ spec:
                 secretKeyRef:
                   name: instant-infra-secrets
                   key: AES_KEY
-            # Hot-pool targets. Raised 2/3/2 -> 10 (and POOL_QUEUE_SIZE added)
-            # to fix load-test finding F1 — the provisioning latency cliff.
-            # A drained pool now refills CONCURRENTLY (bounded) instead of one
-            # item at a time, so a deeper warm buffer no longer costs a
-            # proportionally longer serial refill, and 10 ready items absorbs a
-            # concurrency-8 burst entirely on the fast pool-claim path instead
-            # of falling through to slow live provisioning. Must stay >= the
-            # provisioner code default in internal/config/config.go.
+            # ── Hot-pool targets ──────────────────────────────────────────────
+            # HISTORY: raised 2/3/2 -> 10 (and POOL_QUEUE_SIZE added) on the DO
+            # 5-node pool to fix load-test finding F1 — the provisioning latency
+            # cliff. 10 ready items absorbed a concurrency-8 burst entirely on
+            # the fast pool-claim path instead of falling through to slow live
+            # provisioning.
+            #
+            # AKS (2026-08-09 DO→Azure port): 10 → 0 on all four.
+            # The Azure footprint is ONE Standard_B2as_v2 (2 vCPU / 8 GiB,
+            # ~1.9 vCPU / ~5.5 GiB allocatable). Each pre-warmed item is a real
+            # pod: at 10 apiece that is up to 40 pods holding roughly 4 × 10 ×
+            # (100m / 256Mi) ≈ 4 vCPU / 10 GiB of requests — MORE than the whole
+            # node, so the provisioner would sit in a permanent Pending-pod loop
+            # and starve the platform services it shares the node with.
+            # The migration is greenfield with ZERO customers, so there is
+            # nothing to pre-warm FOR: the pool exists to hide provisioning
+            # latency under burst, and there is no burst.
+            #
+            # 0 disables pre-warming; every provision takes the live path (the
+            # pre-F1 behaviour, ~seconds). Raise to 1–2 per service on the FIRST
+            # real signal (p95 provision latency, or a customer complaint), and
+            # only past that once a second node exists. Must stay >= 0 and
+            # <= whatever the node can actually hold — this is a capacity knob,
+            # not a correctness one.
             - name: POOL_POSTGRES_SIZE
-              value: "10"
+              value: "0"
             - name: POOL_REDIS_SIZE
-              value: "10"
+              value: "0"
             - name: POOL_MONGO_SIZE
-              value: "10"
+              value: "0"
             - name: POOL_QUEUE_SIZE
-              value: "10"
+              value: "0"
             # ── Kubernetes dedicated backend (Team tier) ──────────────────────
             # See docs/ops-k8s-dedicated.md for the full EKS deployment guide.
             - name: K8S_DEDICATED_BACKEND
@@ -181,10 +207,21 @@ spec:
             # overlay (Rancher Desktop NodePorts).
             - name: K8S_EXTERNAL_HOST
               value: "pg.instanode.dev"
-            # K8S_STORAGE_CLASS — prod uses DigitalOcean block storage. Local
-            # dev (Rancher Desktop) uses "local-path" via an overlay.
+            # K8S_STORAGE_CLASS — the StorageClass the provisioner stamps onto
+            # every PVC it creates for a DEDICATED per-tenant DB pod
+            # (K8S_DEDICATED_BACKEND=true above). This is the ONE cloud-coupled
+            # value in this file; it must match a StorageClass that exists on
+            # the cluster or every dedicated provision hangs with the tenant PVC
+            # stuck Pending (the failure is silent from the API's side).
+            #
+            #   AKS   → managed-csi          (built-in StandardSSD_LRS)  ← prod
+            #   AKS   → managed-csi-premium  (built-in Premium_LRS)
+            #   DOKS  → do-block-storage     (retired 2026-08-09)
+            #   k3s   → local-path           (local dev, via overlay)
+            #
+            # Verify on a new cluster with: kubectl get storageclass
             - name: K8S_STORAGE_CLASS
-              value: "do-block-storage"
+              value: "managed-csi"
             - name: K8S_POSTGRES_IMAGE
               value: "pgvector/pgvector:pg16"  # includes pgvector so pg_restore can restore vector extension
             - name: K8S_REDIS_IMAGE

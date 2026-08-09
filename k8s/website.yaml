@@ -72,10 +72,16 @@ metadata:
   name: instant-website
   namespace: instant
 spec:
+  # AKS (2026-08-09 DO→Azure port): NodePort 30081 → ClusterIP.
+  # The public marketing site is served from GitHub Pages behind Cloudflare and
+  # is NOT this workload (verified in the migration plan §1 — instanode.dev
+  # resolves to Cloudflare, not the cluster LB), so nothing external needs a
+  # node port here. Matches the NodePort retirement already applied to
+  # instant-api on 2026-05-11.
+  # For local dev: kubectl port-forward -n instant svc/instant-website 8081:80
+  type: ClusterIP
   selector:
     app: instant-website
   ports:
     - port: 80
       targetPort: 80
-      nodePort: 30081   # access locally at http://localhost:30081
-  type: NodePort

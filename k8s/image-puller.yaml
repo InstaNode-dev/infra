@@ -14,10 +14,36 @@ spec:
       labels:
         app: image-puller
     spec:
-      # Tolerate any taint so the puller lands on every node, including future
-      # tainted pools (e.g. spot, gpu) added to the cluster.
+      # AKS (2026-08-09 DO→Azure port): the blanket `tolerations: [{operator:
+      # Exists}]` was REMOVED.
+      #
+      # It tolerated EVERY taint, so on Azure this DaemonSet would land on the
+      # scale-to-zero Spot pool and pull ~1.5 GiB of database images
+      # (pgvector/pgvector:pg16 + mongo:7 + redis + nats) onto every Spot node
+      # the moment the autoscaler brought one up. The Spot pool exists to run
+      # Kaniko builds and customer deploy pods — neither uses these images — so
+      # every scale-up would pay a multi-minute image pull and egress bill for
+      # a cache that is never read, and it would delay the build the node was
+      # created for.
+      #
+      # The DaemonSet now runs ONLY on the system pool, which is where the
+      # provisioner actually schedules dedicated per-tenant DB pods.
+      # `kubernetes.azure.com/scalesetpriority` is set to "spot" by AKS on every
+      # Spot node and is ABSENT on regular nodes, so DoesNotExist selects
+      # exactly the regular pool without hardcoding a pool name.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.azure.com/scalesetpriority
+                    operator: DoesNotExist
+      # Still tolerate the control-plane taint so the puller covers any future
+      # schedulable system node; deliberately NOT a blanket Exists.
       tolerations:
-        - operator: Exists
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
       automountServiceAccountToken: false
       # initContainers run in order, each must succeed before the next. Each
       # one's `:` command exits instantly — the only work is the image pull,

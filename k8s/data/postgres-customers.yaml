@@ -8,6 +8,12 @@ metadata:
   namespace: instant-data
 spec:
   accessModes: [ReadWriteOnce]
+  # AKS (2026-08-09 DO→Azure port): named explicitly instead of relying on the
+  # cluster default. `managed-csi` = AKS built-in StandardSSD_LRS (Azure Disk,
+  # RWO single-attach — hence strategy.type: Recreate below). This volume holds
+  # EVERY customer db_<token>; naming the class here makes an accidental
+  # default-class change a reviewable diff rather than a silent re-provision.
+  storageClassName: managed-csi
   resources:
     requests:
       storage: 5Gi

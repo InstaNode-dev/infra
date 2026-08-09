@@ -5,11 +5,18 @@ metadata:
   name: instant-migrator
   namespace: instant-infra
 spec:
-  type: NodePort
+  # AKS (2026-08-09 DO→Azure port): NodePort 30090 → ClusterIP.
+  # The migrator has no business being reachable on a node port: it exposes the
+  # resource-migration control surface, and a NodePort opens it on every node in
+  # the cluster, gated only by whatever the AKS NSG happens to allow. It has no
+  # external consumer — the api calls it over Service DNS.
+  # This matches the same NodePort→ClusterIP retirement already applied to
+  # instant-api on 2026-05-11 (see k8s/app.yaml).
+  # For ops access: kubectl port-forward -n instant-infra svc/instant-migrator 8090:8090
+  type: ClusterIP
   selector:
     app: instant-migrator
   ports:
     - name: http
       port: 8090
       targetPort: 8090
-      nodePort: 30090

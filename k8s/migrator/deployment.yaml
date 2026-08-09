@@ -1,4 +1,40 @@
 ---
+# ⚠️ NOT BRING-UP READY — see k8s/apply-all.sh, which deliberately skips this
+# directory on a fresh cluster. Audited 2026-08-09 during the DO→Azure port;
+# three blockers were found and are NOT fixed here because each needs a decision
+# this port has no authority to make. Fix them before adding migrator back to
+# the default apply path.
+#
+#  1. IMAGE. `instant-migrator:local` + `imagePullPolicy: Never` means the
+#     kubelet will only ever use an image already present in the node's
+#     containerd cache. That works on Rancher Desktop (where you `docker build`
+#     locally) and NEVER works on AKS — the pod goes ErrImageNeverPull
+#     immediately. There is also no `imagePullSecrets`, so it could not pull
+#     from the private GHCR org even if the tag were right. Compare app.yaml,
+#     which uses a `:placeholder` GHCR tag precisely so a literal apply fails
+#     LOUDLY rather than silently regressing. Unlike api/worker/provisioner,
+#     the migrator has no auto-deploy workflow publishing an image to GHCR
+#     (CLAUDE.md rule 15 lists only those three), so the correct image
+#     reference is genuinely unknown — do not guess it.
+#
+#  2. TEMPORAL. `WORKFLOW_ENGINE: "temporal"` points TEMPORAL_HOST at
+#     `temporal-frontend.temporal.svc.cluster.local:7233`, but the temporal
+#     stack (k8s/temporal/, installed by its own install.sh) is NOT part of the
+#     cluster bring-up. The startupProbe hits /health, which checks Temporal
+#     connectivity, so on a cluster without Temporal this pod CrashLoops after
+#     the 10-minute startup budget. Either install Temporal first or flip this
+#     to `WORKFLOW_ENGINE: "local"` (the goroutine-pool runner) — a product
+#     decision about whether resource migrations need durable workflows.
+#
+#  3. SECRETS. `MIGRATOR_SECRET` is a non-optional secretKeyRef against
+#     `instant-infra-secrets`. It is now declared in k8s/infra-secrets.yaml
+#     (added 2026-08-09) — previously it was referenced but never templated,
+#     so the pod sat in CreateContainerConfigError.
+#
+# Nothing else depends on this Deployment for the platform to serve traffic:
+# it handles resource MIGRATIONS (CopyData/Verify), not the schema migrations
+# the api runs on boot. The data-tier NetworkPolicy allow-rule for
+# `instant-migrator` is inert while this is unscheduled, which is harmless.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -89,3 +125,16 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 30
             failureThreshold: 6      # 6 × 30s = 3 min before SIGKILL
+          # AKS (2026-08-09 DO→Azure port): requests ADDED. This pod declared
+          # none, making it BestEffort QoS — first evicted under memory
+          # pressure. It orchestrates long-running resource migrations, so
+          # being killed mid-flight is the worst possible eviction target
+          # (its own probe comments call this out). Same BestEffort→Burstable
+          # fix R7 applied to the instant-data tier on 2026-06-10.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

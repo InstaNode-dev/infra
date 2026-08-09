@@ -16,7 +16,7 @@ This runbook is the operator apply checklist for four changes that are
 | Tag | File | What it does | Customer-visible risk if mis-applied |
 |---|---|---|---|
 | **S1** | `k8s/data/postgres-customers-lockdown.yaml` + the patched `postgres-customers.yaml` | pg_hba that REJECTS the admin/superuser roles (`instanode_admin`, `instant_cust`) from the public path; preserves `usr_*` customer roles | LOW — admin-only reject; customers unaffected. Detailed runbook: `POSTGRES-CUSTOMERS-LOCKDOWN-RUNBOOK.md` |
-| **S2** | `k8s/data/networkpolicy.yaml` | ingress NetworkPolicy: only provisioner/migrator/worker (+ nats-proxy for 4222) may reach the data pods | **HIGH — can break ALL customers** if the pg-proxy allow-rule is missing. See §S2 below. |
+| **S2** | `k8s/data/networkpolicy.yaml` | ingress NetworkPolicy: only provisioner/migrator/worker/api (+ nats-proxy for 4222, pg-proxy for 5432) may reach the data pods | **HIGH — can break ALL customers** if an allow-rule is missing. Two were, and are now fixed — see §S2. **Inert unless a policy engine is enabled at AKS cluster creation.** |
 | **R6** | `k8s/data/nats.yaml` | JetStream `emptyDir{}` → PVC (`nats-jetstream-pvc`, 5Gi) so queue data survives restarts | LOW — but the migration step (§R6) drains existing in-memory JetStream state. |
 | **R7** | `k8s/data/stateful-priority.yaml` + resource requests in `{postgres-customers,mongodb,redis-provision}.yaml` | PriorityClass `instant-data-critical` + one PDB per stateful pod + right-sized requests (BestEffort → Burstable) | LOW — eviction-ordering + drain-gating only; no data-path change. |
 
@@ -27,7 +27,9 @@ This runbook is the operator apply checklist for four changes that are
 ```bash
 # 1. Confirm context — NEVER run against the wrong cluster.
 kubectl config current-context
-# Expected for prod: do-nyc3-instant-prod
+# Expected for prod: instanode-prod-aks
+# (the retired DO context was `do-nyc3-instant-prod` — delete it from your
+#  kubeconfig; it hangs on the dead doctl exec-credential plugin)
 
 # 2. Snapshot current data-tier state for rollback reference.
 kubectl get pods,pvc,netpol,pdb,priorityclass -n instant-data -o wide
@@ -96,8 +98,18 @@ a deleted class is harmless until the next reschedule — re-patch to remove).
 
 ## R6 — NATS JetStream emptyDir → PVC
 
-`k8s/data/nats.yaml` now declares `nats-jetstream-pvc` (5Gi, default
-StorageClass = `do-block-storage` on DOKS) and mounts it at `/data/jetstream`.
+`k8s/data/nats.yaml` now declares `nats-jetstream-pvc` (5Gi,
+`storageClassName: managed-csi` — AKS built-in StandardSSD_LRS) and mounts it
+at `/data/jetstream`.
+
+> **AKS (2026-08-09 DO→Azure port):** the class is now NAMED in the manifest
+> rather than inherited from the cluster default (`do-block-storage` on the
+> retired DOKS). Same change on all four data-tier PVCs. Two of them —
+> `mongodb-pvc` and `redis-provision-pvc` — previously named **`local-path`**,
+> which is the k3s/Rancher-Desktop provisioner and **does not exist on AKS**:
+> they would have sat `Pending` forever with nothing in the pod's events to say
+> why. If you are ever debugging a Pending data-tier PVC, `kubectl get
+> storageclass` is the first command.
 
 > **Data note:** pre-cutover JetStream state lived in `emptyDir{}` and is
 > **already non-durable** (every prior restart wiped it). Switching to the PVC
@@ -201,31 +213,52 @@ backup is at `$PGDATA/pg_hba.conf.bak.2026-06-03`).
 ## S2 — data-tier ingress NetworkPolicy (apply LAST — highest risk)
 
 `k8s/data/networkpolicy.yaml` adds a default-deny ingress policy per data pod,
-allowing ONLY provisioner / migrator / worker (+ nats-proxy for 4222/8222).
+allowing ONLY provisioner / migrator / worker / api (+ nats-proxy for 4222 and
+pg-proxy for 5432).
 
-### ⚠️ The pg-proxy allow-rule — this is the customer-breaking trap
+### ⚠️ The allow-list — this is the customer-breaking trap
 
-The `postgres-customers-ingress` policy as committed **does NOT list
-`instant-pg-proxy`** — the allow-rule for it is **DORMANT** (commented out at
-`networkpolicy.yaml` lines ~88–103). If the public customer connect path is
-`pg.instanode.dev → ingress-nginx tcp-services → instant-pg-proxy
-(instant ns) → postgres-customers`, then applying this policy AS-IS
-**default-denies the proxy and BREAKS EVERY CUSTOMER POSTGRES CONNECTION.**
+**RESOLVED 2026-08-09 (AKS port).** The committed policy had TWO missing
+callers, either of which would have caused an outage on apply:
 
-`POSTGRES-CUSTOMERS-LOCKDOWN-RUNBOOK.md §L4` records that as of 2026-06-06 the
-NetworkPolicy is **NOT applied in prod** and that applying it as-is would
-default-deny + break the proxy path. **Do not apply S2 until you have:**
+| Missing caller | Port | What broke | Status |
+|---|---|---|---|
+| `instant-pg-proxy` (ns `instant`) | 5432 | **every customer Postgres connection** — the public path is `pg.instanode.dev → LB → ingress-nginx tcp-services → instant-pg-proxy → postgres-customers` | rule now **ACTIVE** (was commented out) |
+| `instant-api` (ns `instant`) | 5432 + 4222 | `/readyz` `customer_db` check and every `/queue/new` provision | rule **ADDED** |
 
-1. **Confirmed the live proxy deployment's namespace + pod labels:**
+The `instant-api` gap was found during the AKS port and had never been flagged:
+the api lives in namespace `instant`, not `instant-infra`, so none of the three
+original `instant-infra` rules covered it — while `CUSTOMER_DATABASE_URL` is a
+non-optional env on `k8s/app.yaml` and `NATS_HOST` defaults to
+`nats.instant-data.svc.cluster.local` (`api/internal/config/config.go:436`).
+
+A `from` selector that matches no pod is inert, so enabling the pg-proxy rule
+before the proxy exists costs nothing — which is exactly why greenfield was the
+right moment to stop deferring it.
+
+**Still verify before applying S2:**
+
+1. **Confirm the proxy deployment's real namespace + pod labels** if/when it is
+   deployed — its manifest lives in the separate `InstaNode-dev/instant-pg-proxy`
+   repo, NOT here, so the `app: instant-pg-proxy` label in this policy is a
+   convention, not a guarantee:
    ```bash
    kubectl get pods -A -l app=instant-pg-proxy -o wide
-   # (the proxy manifest lives in the separate InstaNode-dev/instant-pg-proxy
-   #  repo, NOT here — read the real ns + labels off the live cluster.)
    ```
-2. **Uncommented + edited the dormant pg-proxy block** in
-   `networkpolicy.yaml` (lines ~88–103) to match those real ns/labels.
-3. **Confirmed Cilium (the CNI) actually enforces NetworkPolicy** in this
-   cluster (`kubectl get ds -n kube-system | grep cilium`).
+   If the labels differ, the rule silently stops matching and customers break.
+2. **Confirmed the cluster actually ENFORCES NetworkPolicy.**
+   On DOKS this was Cilium by default (`kubectl get ds -n kube-system | grep
+   cilium`). **On AKS it is not automatic** — a network policy engine is a
+   cluster-CREATION-time setting. Without one, all four policies apply cleanly,
+   `kubectl get networkpolicy` lists them, and none of them do anything:
+   ```bash
+   az aks show -g <rg> -n <cluster> --query networkProfile.networkPolicy -o tsv
+   # must print cilium | azure | calico — NOT null/empty
+   ```
+   It cannot be turned on later without recreating the cluster (or a
+   constrained migration path), so it is a **required Terraform input**.
+   Treat a null result as "S2 is not applied", regardless of what
+   `kubectl get networkpolicy` shows.
 
 Only then:
 
@@ -272,7 +305,7 @@ kubectl delete -f k8s/data/networkpolicy.yaml
 | 2 | R7-B | apply `mongodb.yaml`,`redis-provision.yaml` + patch `priorityClassName` | QoS = Burstable | re-apply prior manifest |
 | 3 | R6 | `kubectl apply -f k8s/data/nats.yaml` (+ priorityClassName patch) | PVC Bound + durability publish/restart test | revert manifest |
 | 4 | S1 | apply lockdown ConfigMap + `postgres-customers.yaml` (+ patch) | **external admin psql REJECTED** | per lockdown runbook |
-| 5 | S2 | **edit dormant pg-proxy rule FIRST**, then apply `networkpolicy.yaml` | provisioner reaches pg AND customer path works | `kubectl delete -f …` |
+| 5 | S2 | **confirm the policy engine is enabled** (`az aks show … networkProfile.networkPolicy`), then apply `networkpolicy.yaml` | provisioner AND api reach pg; customer path works | `kubectl delete -f …` |
 
 After every step, sanity-check the platform hot path:
 

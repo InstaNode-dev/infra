@@ -22,7 +22,16 @@ data:
   # change.
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
   OTEL_SERVICE_NAME: "instant-api"
-  ENVIRONMENT: development
+  # AKS (2026-08-09 DO→Azure port): development → production.
+  # This ConfigMap is the PROD ConfigMap (it is the one `app.yaml` envFroms in
+  # namespace `instant`), and it shipped `development`, which registers the
+  # dev-only internal endpoints — most importantly `POST /internal/set-tier`,
+  # an unauthenticated tier escalation (CLAUDE.md "Dev-Only Internal Endpoints").
+  # Note this is DISTINCT from the per-resource `env` tag, whose default is
+  # deliberately `development` (migration 026) — that is a request-scoped field
+  # on /db/new etc. and is unaffected by this value.
+  # Local dev / Rancher Desktop: override to `development` via an overlay.
+  ENVIRONMENT: production
   INSTANT_ENABLED_SERVICES: redis,mongodb,postgres,queue,webhook,storage,deploy
   PLANS_PATH: /app/plans.yaml
   NATS_HOST: nats.instant-data.svc.cluster.local
@@ -34,11 +43,21 @@ data:
   GOOGLE_REDIRECT_URI: ""
   PROVISIONER_ADDR: "instant-provisioner.instant-infra.svc.cluster.local:50051"
   COMPUTE_PROVIDER: "k8s"
-  STACK_EXPOSE_VIA: "nodeport"
+  # STACK_EXPOSE_VIA — how `POST /stacks/new` exposes a service with expose=true.
+  # "nodeport" is the LOCAL-DEV path: api/internal/providers/compute/k8s/stack.go
+  # :191 creates a NodePort Service and returns `http://localhost:<nodePort>` as
+  # the app URL. On a real cluster that URL is unreachable for the caller — and
+  # /stacks/new is the ANONYMOUS deploy path, so it was handing every anonymous
+  # user a localhost URL. Any value other than "nodeport" takes the else-branch:
+  # ClusterIP Service + a real Ingress under DEPLOY_DOMAIN with CERT_ISSUER TLS.
+  # AKS (2026-08-09 DO→Azure port): "nodeport" → "ingress".
+  STACK_EXPOSE_VIA: "ingress"
   KUBE_NAMESPACE_APPS: "instant-apps"
   # MINIO_ENDPOINT / MINIO_BUCKET_NAME retired 2026-05-20 (self-hosted MinIO
   # retirement). Object storage now lives behind OBJECT_STORE_* in
-  # instant-secrets (DO Spaces, nyc3, bucket instant-shared).
+  # instant-secrets. AKS (2026-08-09): backend is Cloudflare R2, NOT Azure Blob
+  # — Blob is not S3-compatible and none of the four coded providers in
+  # common/storageprovider/ speak it. See k8s/secrets.yaml.
   # Deploy / stack ingress wiring. DEPLOY_DOMAIN is the wildcard zone the
   # api builds per-deploy hostnames under (<id>.deployment.instanode.dev);
   # without it the code falls back to the hardcoded default "instant.dev".
