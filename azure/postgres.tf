@@ -225,20 +225,22 @@ resource "azurerm_postgresql_flexible_server_configuration" "require_secure_tran
 # 2. Extensions must be allowlisted before CREATE EXTENSION works.
 #
 #    Flexible Server blocks extensions unless they are listed in the
-#    `azure.extensions` server parameter. No CREATE EXTENSION statement exists
-#    in this repo (the migrations live in the api repo), so the required set
-#    could not be enumerated here rather than guessed at. Before running the
-#    migrator in Phase 5:
+#    `azure.extensions` server parameter.
 #
-#      rg -n 'CREATE EXTENSION' <api-repo>/internal/db/migrations
+#    RESOLVED 2026-08-09. The enumeration this comment asked for was run
+#    against the api repo:
 #
-#    and if anything turns up, add:
+#      $ grep -rniE 'create extension' api/internal/db/migrations/
+#      010_team_invitations.sql:15:CREATE EXTENSION IF NOT EXISTS pgcrypto;
 #
-#      resource "azurerm_postgresql_flexible_server_configuration" "extensions" {
-#        name      = "azure.extensions"
-#        server_id = azurerm_postgresql_flexible_server.main.id
-#        value     = "UUID-OSSP,PGCRYPTO"   # actual list from the grep above
-#      }
+#    Exactly one, across all 72 migrations. The resource is now declared at
+#    the bottom of this file - it is NOT optional.
+#
+#    Why this was a hard blocker: migrations run at api boot
+#    (api/main.go:132) and a failure is fatal. Without the allowlist entry,
+#    migration 010 fails, the api CrashLoopBackOffs, and NOTHING in the
+#    platform starts. It would have been the first thing to break on a
+#    cluster that otherwise came up perfectly.
 #
 #    Note this is the PLATFORM database. pgvector is a CUSTOMER data-tier
 #    concern (pgvector/pgvector:pg16 in the in-cluster postgres-customers pod)
@@ -252,3 +254,33 @@ resource "azurerm_postgresql_flexible_server_configuration" "require_secure_tran
 #    `terraform output postgres_connection_string_template` prints these with
 #    the FQDN filled in and the password left as a placeholder.
 ###############################################################################
+
+###############################################################################
+# Extension allowlist
+#
+# Azure PostgreSQL Flexible Server refuses `CREATE EXTENSION` for anything not
+# named in the `azure.extensions` server parameter, which is EMPTY by default.
+#
+# Enumerated 2026-08-09 across all 72 platform migrations:
+#   api/internal/db/migrations/010_team_invitations.sql:15
+#     CREATE EXTENSION IF NOT EXISTS pgcrypto;
+#
+# That is the complete set - one extension. Command to re-verify if migrations
+# are added later (this list must be kept in sync, it is a rule-22 contract
+# surface):
+#
+#   grep -rniE 'create extension' api/internal/db/migrations/
+#
+# Migrations run at api boot (api/main.go:132) and are a hard gate: without
+# this resource, migration 010 fails and every api pod CrashLoopBackOffs.
+#
+# pgvector is deliberately NOT here - it is a CUSTOMER data-tier concern,
+# served by the pgvector/pgvector:pg16 image in the in-cluster
+# postgres-customers pod, not by this platform database.
+###############################################################################
+
+resource "azurerm_postgresql_flexible_server_configuration" "extensions" {
+  name      = "azure.extensions"
+  server_id = azurerm_postgresql_flexible_server.main.id
+  value     = "PGCRYPTO"
+}

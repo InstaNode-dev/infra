@@ -312,6 +312,17 @@ resource "azurerm_kubernetes_cluster" "main" {
 ###############################################################################
 
 resource "azurerm_kubernetes_cluster_node_pool" "build" {
+  # DISABLED for the migration (forum ruling D1, 2026-08-09). See the long
+  # rationale on var.spot_node_max_count: nothing in api/internal/ sets a
+  # toleration, the Kyverno policy tolerates a different taint than the one
+  # Terraform applies, Kaniko's BackoffLimit is 0 so an eviction is a
+  # permanent build failure, and low-priority quota allows one node anyway.
+  #
+  # A count guard rather than max_count = 0, because AKS rejects an
+  # autoscaling pool with max_count < 1 - setting the variable to 0 without
+  # this would fail at apply, not disable the pool.
+  count = var.spot_node_max_count > 0 ? 1 : 0
+
   name                  = "build"
   kubernetes_cluster_id = azurerm_kubernetes_cluster.main.id
   vm_size               = var.spot_node_vm_size

@@ -43,13 +43,38 @@ variable "environment" {
 
 variable "location" {
   description = <<-EOT
-    Azure region. East US per AZURE-MIGRATION-PLAN.md section 5.2: matches the
-    nyc3 latency profile for US customers, cheapest tier, broadest SKU
-    availability. Every price annotation in this configuration is East US;
-    changing this invalidates the cost model in costs.tf.
+    Azure region. US-only is a hard operator requirement (2026-08-09).
+
+    CHANGED 2026-08-09 from eastus to northcentralus. NOT a preference - East
+    US is CLOSED to this subscription.
+
+    Verified live against the ARM SKU API for subscription
+    73ae3d2a-5847-48f2-bcea-10bd3e1914f6:
+
+      az rest --method get --url "https://management.azure.com/subscriptions/\
+        <sub>/providers/Microsoft.Compute/skus?api-version=2021-07-01\
+        &$filter=location eq '<region>'"
+
+      REGION            D4as_v5   D2as_v5
+      eastus            BLOCKED   BLOCKED    <- NotAvailableForSubscription
+      centralus         BLOCKED   BLOCKED
+      westus2           BLOCKED   BLOCKED
+      southcentralus    BLOCKED   BLOCKED
+      northcentralus    OK        OK         <- the only open US region found
+
+    Every candidate SKU in East US returns restriction reasonCode
+    `NotAvailableForSubscription`. This is offer-level regional gating applied
+    to sponsorship subscriptions, not a capacity shortage, so it will not clear
+    on retry. An apply against East US fails at node pool creation - after the
+    resource group, VNet and public IP have already been created.
+
+    North Central US is a US region (Illinois), satisfying the US-only
+    requirement. Pricing for D4as_v5 and PostgreSQL matches East US, so the
+    cost annotations in costs.tf remain valid. Re-verify the table above if the
+    subscription's offer type ever changes.
   EOT
   type        = string
-  default     = "eastus"
+  default     = "northcentralus"
 }
 
 variable "name_suffix" {
@@ -169,13 +194,39 @@ variable "kubernetes_version" {
 
 variable "system_node_vm_size" {
   description = <<-EOT
-    System node pool VM size. Standard_B2as_v2 = 2 vCPU / 8 GiB, $54.90/mo
+    System node pool VM size.
+
+    Standard_D4as_v5 = 4 vCPU / 16 GiB / 8 data disks, $125.56/mo
     (East US, Linux, PAYG, verified via prices.azure.com 2026-08-09).
-    Roughly 1.9 vCPU / 5.5 GiB allocatable after AKS reservations, against a
-    measured platform requirement of ~1.35 vCPU / ~2.2 GiB.
+
+    CHANGED 2026-08-09 from Standard_B2as_v2 after forum review. Two
+    independent reasons, both verified against `az vm list-sizes`:
+
+    1. DATA DISK CAP. B2as_v2 caps at 4 data disks. The four platform PVCs
+       (postgres-customers, mongodb, redis-provision, nats) consume ALL FOUR.
+       The provisioner then creates a PVC per dedicated tenant resource, so
+       the FIRST paying customer wedges on FailedAttachVolume. D4as_v5
+       allows 8.
+
+    2. BURSTABLE CREDIT STARVATION. The B-series is burstable: sustained
+       throughput is a fraction of nominal vCPU, and once credits drain the
+       node hard-throttles. Measured steady state is ~1.85 vCPU (platform
+       ~1.35 + kube-system ~0.5), and with the Spot pool removed a Kaniko
+       build adds up to 1 more, so peak is ~2.85. That exceeds any B-series
+       sustained allowance at this size - the node would throttle
+       continuously under normal operation.
+
+       Critically, credit exhaustion raises NO node condition. It is an
+       Azure VM metric, invisible to every kubectl-based check in the soak
+       harness. The platform would degrade with every monitor green - the
+       exact failure class this project keeps hitting.
+
+    D4as_v5 is NON-burstable: 4 full vCPUs, always. No credit mechanics.
+    Costs $70.66/mo more than B2as_v2 and is worth it - the alternative is
+    an invisible failure mode in a product being prepared for sale.
   EOT
   type        = string
-  default     = "Standard_B2as_v2"
+  default     = "Standard_D4as_v5"
 }
 
 variable "system_node_min_count" {
@@ -249,9 +300,37 @@ variable "spot_node_min_count" {
 }
 
 variable "spot_node_max_count" {
-  description = "Autoscaler ceiling for the build pool. Each running node costs ~$27.33/mo prorated by the seconds it actually exists."
+  description = <<-EOT
+    Autoscaler ceiling for the build pool.
+
+    DEFAULT CHANGED 2026-08-09 from 2 to 0 - the Spot pool is DISABLED for
+    the migration. Forum ruling D1, four independent findings:
+
+      1. Terraform taints the pool `instanode.dev/workload=build:NoSchedule`,
+         but `rg 'Tolerations|NodeSelector|Affinity' api/internal/` returns
+         ZERO hits. No workload can schedule there.
+      2. The Kyverno policy written to fix that tolerates a DIFFERENT taint
+         (`kubernetes.azure.com/scalesetpriority` + a nonexistent
+         `instanode.dev/spot`), so it pins pods to a node that rejects them -
+         Pending forever, silently, behind failurePolicy: Ignore.
+      3. Kaniko Jobs set BackoffLimit: 0, so a single Spot eviction is a
+         permanent, unretried build failure.
+      4. Regional low-priority quota is 3 vCPU - one 2-vCPU node. Negligible
+         capacity for a whole extra failure class.
+
+    Scale-to-zero meant this pool cost ~$0 anyway, so disabling it saves
+    nothing and removes real risk. Builds run on the system pool, which is
+    why that SKU moved to 4 vCPU.
+
+    TO RE-ENABLE (a launch gate, not a migration gate): set BackoffLimit >= 1,
+    reconcile the taint strings between aks.tf and the Kyverno policy, and add
+    a scheduling assertion that fails loudly instead of leaving pods Pending.
+    Co-tenancy of builds and customer workloads is a SECURITY decision -
+    Basv2/Bsv2 do not support nested virtualisation, so Kata sandboxing is
+    unavailable at any price and the node boundary is the only layer left.
+  EOT
   type        = number
-  default     = 2
+  default     = 0
 }
 
 variable "spot_node_os_disk_size_gb" {
@@ -500,12 +579,53 @@ variable "enable_cost_budget" {
 
 variable "monthly_budget_amount" {
   description = <<-EOT
-    Monthly budget in USD. 100 sits just above the modelled steady-state run
-    rate (see costs.tf), so the 80% alert fires on genuine drift rather than on
-    normal operation.
+    Monthly budget in USD.
+
+    RAISED 2026-08-09 from 100 to 220 (forum, FinOps review).
+
+    100 sat BELOW the true run rate, so the 80% threshold ($80) would have
+    fired every single month by construction - an alert that cries wolf on
+    normal operation trains the operator to ignore it, which is worse than
+    having no alert. The original 100 was set against a modelled $98.90/mo
+    that turned out to omit the mandatory OS disk, a sixth LB rule, disk
+    transactions, and a second AKS-managed outbound IP.
+
+    Corrected steady state with Standard_D4as_v5:
+
+      Node D4as_v5                    $125.56
+      PostgreSQL B1ms + 32 GiB          16.09
+      OS disk P6 64 GiB                 10.21
+      PVC disks (4)                      6.00
+      Standard LB (6 rules)             18.25
+      Static public IP                   3.65
+      AKS-managed outbound IP            3.65   (see NOTE below)
+      Private DNS zone                   0.50
+      Spot pool                          0.00   (disabled - ruling D1)
+      -----------------------------------------
+                                      ~$183.91/mo
+
+    220 sits ~20% above that: high enough that 80% ($176) does not fire on
+    normal operation, low enough that real drift trips it before the month
+    ends.
+
+    NOTE the AKS-managed outbound IP: `outbound_type = "loadBalancer"` with
+    no `load_balancer_profile` makes AKS provision its own second public IP.
+    It can be eliminated by passing outbound_ip_address_ids = [ingress IP],
+    but that routes all cluster egress through the ingress IP and shares its
+    SNAT port budget. Deliberately NOT done: $3.65/mo is not worth changing
+    the egress path during a migration. Revisit post-launch.
+
+    THE HARD LIMIT THIS DOES NOT PROVIDE: on a Sponsorship subscription
+    (quotaId Sponsored_2016-01-01) a budget NOTIFIES but cannot CONTROL, and
+    Azure Cost Management does not support this offer type at all - so these
+    alerts may never fire. There is no spending limit on this offer; the
+    setting does not exist. On credit exhaustion the subscription silently
+    converts to Pay-As-You-Go and charges the card on file. The real guardrail
+    is the credit End Date in a calendar plus a rehearsed `terraform destroy`,
+    not this resource.
   EOT
   type        = number
-  default     = 100
+  default     = 220
 }
 
 variable "budget_start_date" {
