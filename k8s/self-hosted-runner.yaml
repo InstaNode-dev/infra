@@ -10,8 +10,16 @@ metadata:
 # WHY:
 #   Private repos (worker, provisioner, infra) consume metered GitHub Actions
 #   minutes. We hit the cap during a high-iteration session on 2026-05-21.
-#   This runner pod runs ON YOUR EXISTING DOKS CLUSTER and consumes ZERO
-#   metered minutes — only your already-paid DigitalOcean node-pool budget.
+#   This runner pod runs ON YOUR EXISTING AKS CLUSTER and consumes ZERO
+#   GitHub-metered minutes — only your already-paid Azure node-pool budget.
+#   ⚠️ AKS SIZING CAVEAT (2026-08-09 DO→Azure port): the Azure footprint is a
+#   SINGLE Standard_B2as_v2 (2 vCPU / 8 GiB, ~1.9 vCPU / ~5.5 GiB allocatable)
+#   that already hosts the whole platform. This runner requests real CPU/RAM
+#   AND runs docker builds. It is NOT part of the default bring-up
+#   (`apply-all.sh` does not reference it) and should stay unapplied until
+#   either a second node exists or GitHub-hosted minutes actually run out.
+#   The three backend deploy workflows use GitHub-hosted runners + a
+#   `KUBECONFIG_B64` secret, so nothing depends on this file.
 #
 # WHAT IT REPLACES:
 #   `runs-on: ubuntu-latest` on each workflow. After this is applied + each
@@ -103,9 +111,11 @@ metadata:
 #   This restricts the runner's outbound traffic to GitHub + GHCR +
 #   public internet (TCP 80/443) and BLOCKS access to:
 #     - 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (in-cluster pods
-#       AND the k8s API at 10.245.0.1 on DOKS)
-#     - 100.64.0.0/10 (CGNAT — DOKS pod CIDR variant)
-#     - 169.254.0.0/16 (link-local + DO/AWS metadata IMDS)
+#       AND the in-cluster kubernetes.default API VIP — 10.0.0.1 on AKS's
+#       default 10.0.0.0/16 service CIDR, 10.245.0.1 on the retired DOKS)
+#     - 100.64.0.0/10 (CGNAT)
+#     - 169.254.0.0/16 (link-local + cloud metadata IMDS — on Azure this is
+#       the node's managed-identity token endpoint at 169.254.169.254)
 #   So a runner-pod RCE that escapes to docker.sock still cannot
 #   pivot to the k8s API, cluster-internal services, or cloud
 #   metadata. The host-fs escape via docker.sock remains possible
@@ -148,8 +158,11 @@ spec:
   resources:
     requests:
       storage: 5Gi
-  # storageClassName omitted — falls back to cluster default. On DOKS this
-  # is `do-block-storage`.
+  # AKS (2026-08-09 DO→Azure port): named explicitly instead of relying on the
+  # cluster default (which was `do-block-storage` on DOKS). `managed-csi` is the
+  # AKS built-in StandardSSD_LRS class. `local-path` is k3s-only and does NOT
+  # exist on AKS — never reintroduce it here.
+  storageClassName: managed-csi
 
 ---
 apiVersion: apps/v1
@@ -175,8 +188,16 @@ spec:
       serviceAccountName: github-runner
       restartPolicy: Always
       # Optional: pin to its own node pool to isolate from customer workloads.
+      # AKS (2026-08-09 DO→Azure port): the DOKS node-pool label
+      # `doks.digitalocean.com/node-pool` does not exist on Azure. AKS labels
+      # every node with `agentpool: <poolName>` (and the fully-qualified
+      # `kubernetes.azure.com/agentpool: <poolName>`).
       # nodeSelector:
-      #   doks.digitalocean.com/node-pool: builder-pool
+      #   agentpool: builder
+      #
+      # ⚠️ Do NOT target the Spot pool here. A Spot node can be reclaimed with
+      # 30s notice, which kills an in-flight CI job. If this runner is ever
+      # scheduled, it belongs on the system pool. See k8s/spot/README.md.
       securityContext:
         # The actions/runner image runs as uid 1001. Pin that explicitly
         # so the container does NOT run as root — limits blast radius if
@@ -275,7 +296,8 @@ spec:
 #
 # Tightens egress so a runner-pod RCE (e.g. via docker.sock host escape)
 # cannot pivot to the k8s API server, cluster-internal services, or
-# DO/AWS metadata IMDS at 169.254.169.254. Outbound is limited to
+# cloud metadata IMDS at 169.254.169.254 (on Azure: the node managed-identity
+# token endpoint). Outbound is limited to
 # TCP 80/443 (GitHub, GHCR, public package mirrors) plus UDP/TCP 53
 # for DNS to the in-cluster CoreDNS.
 #
@@ -289,8 +311,11 @@ spec:
 #   - If the cluster runs on flatcar/k3s where the pod CIDR sits
 #     outside the RFC1918 ranges below, this policy will need an
 #     explicit `to: namespaceSelector` for kube-system DNS.
-#     DOKS uses 10.244.0.0/16 (pod) + 10.245.0.0/16 (service), so
-#     CoreDNS is reachable via the namespaceSelector rule below.
+#     AKS with Azure CNI Overlay uses 10.244.0.0/16 (pod) +
+#     10.0.0.0/16 (service) by default — both inside RFC1918 — so
+#     CoreDNS is reachable via the namespaceSelector rule below and the
+#     ipBlock `except` list below still covers the cluster network.
+#     (DOKS used 10.244.0.0/16 pod + 10.245.0.0/16 service; same shape.)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -321,11 +346,14 @@ spec:
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
-              - 10.0.0.0/8        # private RFC1918 (DOKS pod+svc CIDR)
+              - 10.0.0.0/8        # RFC1918 — AKS pod 10.244/16 + svc 10.0/16, and the VNet
               - 172.16.0.0/12     # private RFC1918
               - 192.168.0.0/16    # private RFC1918
-              - 100.64.0.0/10     # CGNAT (DOKS pod CIDR variant)
-              - 169.254.0.0/16    # link-local + cloud metadata IMDS
+              - 100.64.0.0/10     # CGNAT
+              # link-local — covers the Azure IMDS at 169.254.169.254, which
+              # hands out managed-identity tokens for the whole node. Blocking
+              # it is the single most important line in this list on AKS.
+              - 169.254.0.0/16
       ports:
         - protocol: TCP
           port: 443

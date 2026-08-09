@@ -1,0 +1,97 @@
+---
+# spot-scheduling-policy.yaml — route Kaniko builds + customer deploy pods to the
+# AKS Spot node pool WITHOUT an api-repo change.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# READ k8s/spot/README.md FIRST. This file is the INTERIM (option a). The
+# durable fix is the api-side change (option b) — delete this policy when that
+# ships, do not run both.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# WHY A POLICY AND NOT A MANIFEST
+# The build Job and the customer Deployment are created at request time by the
+# api, in namespaces (`instant-deploy-<appID>` / `instant-stack-<slug>`) that do
+# not exist until the deploy starts. There is nothing in this repo to patch.
+# Kubernetes' own per-namespace default-toleration mechanism
+# (`scheduler.alpha.kubernetes.io/defaultTolerations`) needs the
+# PodTolerationRestriction admission plugin, which CANNOT be enabled on AKS —
+# the control plane is managed and does not accept custom admission plugins.
+# A mutating admission webhook is therefore the only in-cluster option, and
+# Kyverno is already a prerequisite for k8s/preview/02-policies.yaml.
+#
+# PREREQUISITE: Kyverno installed cluster-wide.
+#   helm repo add kyverno https://kyverno.github.io/kyverno
+#   helm install kyverno kyverno/kyverno -n kyverno --create-namespace
+#   kubectl get pods -n kyverno          # all Running before applying this file
+#
+# FAIL-OPEN BY DESIGN: failurePolicy: Ignore. If Kyverno is down or slow, pods
+# are admitted UNMUTATED and the build runs on the system node — degraded, not
+# broken. The opposite (failurePolicy: Fail) would make a Kyverno outage take
+# down /deploy/new, which is the product's whole wedge. Never flip this to Fail.
+#
+# VERIFY after a real deploy:
+#   kubectl get pod -n instant-deploy-<appID> -o jsonpath='{.items[0].spec.nodeSelector}'
+#   → {"kubernetes.azure.com/scalesetpriority":"spot"}
+#   kubectl get nodes -l kubernetes.azure.com/scalesetpriority=spot
+#   → a node appears within ~2 min of the first build (autoscaler 0→1)
+#
+# ROLLBACK: kubectl delete -f k8s/spot/spot-scheduling-policy.yaml
+#   Pods created after the delete schedule on the system pool again. In-flight
+#   pods are unaffected (mutation happens once, at admission).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: instant-spot-scheduling
+  labels:
+    app.kubernetes.io/part-of: instanode-compute
+  annotations:
+    policies.kyverno.io/title: Route build + customer deploy pods to the Spot pool
+    policies.kyverno.io/category: Cost / Scheduling
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Injects the AKS Spot nodeSelector and the matching toleration into every
+      pod created in an api-owned deploy namespace (instant-deploy-*,
+      instant-stack-*, instant-apps). Without BOTH, the tainted scale-to-zero
+      Spot pool never receives work and every Kaniko build competes with the
+      platform for the single system node. Interim measure — superseded by the
+      api-side BUILD_NODE_SELECTOR/BUILD_NODE_TOLERATION change.
+spec:
+  # Ignore = fail open. A Kyverno outage must never block a customer deploy.
+  failurePolicy: Ignore
+  # Mutation only; nothing here rejects a pod.
+  background: false
+  rules:
+    - name: add-spot-scheduling
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - "instant-deploy-*"
+                - "instant-stack-*"
+                - "instant-apps"
+      mutate:
+        patchStrategicMerge:
+          spec:
+            # `+(...)` is Kyverno's "add only if the key is absent" anchor, so
+            # this never overwrites a nodeSelector the api starts setting later
+            # (which is exactly how option (b) supersedes this policy cleanly).
+            +(nodeSelector):
+              kubernetes.azure.com/scalesetpriority: spot
+            tolerations:
+              # AKS applies this taint to every Spot node automatically from
+              # `priority = "Spot"` on the node pool — no custom taint required
+              # from Terraform.
+              - key: kubernetes.azure.com/scalesetpriority
+                operator: Equal
+                value: spot
+                effect: NoSchedule
+              # Optional belt-and-braces for a custom taint, if Terraform adds
+              # one. Tolerating a taint that does not exist is a no-op, so this
+              # line is safe whether or not the taint is configured.
+              - key: instanode.dev/spot
+                operator: Equal
+                value: "true"
+                effect: NoSchedule

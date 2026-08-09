@@ -9,11 +9,14 @@
 # unidentified, NON-audited path. The confirmed root-cause vector
 # (docs/ci/DATA-INTEGRITY-DROP-PATH-AUDIT.md §"truehomie root-cause hypotheses"
 # H1) is a DIRECT admin connection to `postgres-customers` from the public
-# internet via `pg.instanode.dev:5432` → DO LoadBalancer → ingress-nginx
+# internet via `pg.instanode.dev:5432` → cloud LoadBalancer → ingress-nginx
 # tcp-services → instant-pg-proxy → this pod, against a CATCH-ALL pg_hba.
+# On AKS that LoadBalancer is an Azure Standard LB in front of the same
+# ingress-nginx; the topology and therefore the vector are IDENTICAL.
 #
-# VERIFIED (config + safe checks, 2026-06-06):
-#   - `pg.instanode.dev` resolves to 152.42.154.144 — the SAME IP as
+# VERIFIED (config + safe checks, 2026-06-06, on the now-retired DO cluster —
+# re-verify on AKS once pg.instanode.dev is repointed):
+#   - `pg.instanode.dev` resolved to 152.42.154.144 — the SAME IP as
 #     api/redis/mongo.instanode.dev (the shared DO LoadBalancer fronting
 #     ingress-nginx). i.e. pg is publicly DNS-routed.
 #   - `nc -z pg.instanode.dev 5432` SUCCEEDS from the public internet (TCP
@@ -51,10 +54,17 @@
 # for the pg-proxy interaction caveat — that is the piece an operator MUST
 # verify in a maintenance window before relying on the NetworkPolicy alone.
 #
-# DOKS pod CIDR = 10.244.0.0/16 (confirmed in k8s/self-hosted-runner.yaml
-# comment + DOKS default). The svc CIDR is 10.245.0.0/16 — both are RFC1918
-# inside 10.0.0.0/8; we scope admin to 10.0.0.0/8 to also cover any future
-# in-cluster pg-proxy / sidecar without re-editing this file.
+# AKS (2026-08-09 DO→Azure port) — CIDRs.
+# The DO cluster used pod CIDR 10.109.0.0/16 + svc CIDR 10.108.0.0/16.
+# AKS with Azure CNI Overlay defaults to pod CIDR 10.244.0.0/16 and service
+# CIDR 10.0.0.0/16. All of these sit inside 10.0.0.0/8, so the `10.0.0.0/8`
+# scoping used below is correct on BOTH clouds and needs no edit — that is
+# exactly why it was written as /8 rather than the specific pod CIDR.
+# ⚠️ If Terraform ever provisions the cluster with a pod/service CIDR OUTSIDE
+# 10.0.0.0/8 (e.g. a 172.16/12 or 192.168/16 VNet), the in-cluster admin allow
+# rule below stops matching and every provisioner/api/worker connection to
+# postgres-customers fails authn. Confirm with:
+#   kubectl cluster-info dump | grep -m2 -E 'cluster-cidr|service-cluster-ip-range'
 #
 # IMPORTANT CAVEAT — pg-proxy SNAT:
 #   If instant-pg-proxy runs IN-cluster and SNATs customer traffic to its own
@@ -124,7 +134,9 @@ data:
     # → instant-pg-proxy (a normal in-cluster pod, NOT hostNetwork) → here. The
     # proxy TERMINATES the inbound TCP and RE-ORIGINATES to postgres-customers,
     # so EVERY public connection (incl. an external `-U instanode_admin`) arrives
-    # at this pod SNAT'd to a PROXY POD IP inside 10.109.x (== inside 10.0.0.0/8).
+    # at this pod SNAT'd to a PROXY POD IP inside the cluster pod CIDR
+    # (10.244.0.0/16 on AKS, 10.109.0.0/16 on the retired DOKS — either way,
+    # inside 10.0.0.0/8, which is what makes the broad allow rule below unsafe).
     # The proxy v0.1.0 has NO role gate and an OPEN fallback backend, so today an
     # external admin connection reaches scram (LIVE-VERIFIED: `psql -U
     # instanode_admin` over the public host returns "password authentication
@@ -135,24 +147,44 @@ data:
     # (first-match wins, so the proxy-IP reject must come first.)
     #
     # ── proxy-pod-IP admin reject (the actual public-path closer) ──────────────
-    # LIVE-VERIFIED proxy pod IPs 2026-06-06: 10.109.4.113, 10.109.0.101.
-    # ⚠️ CHURN DEPENDENCY: if instant-pg-proxy reschedules, these IPs change and
-    # this reject goes stale (exactly how the 2026-06-03 hand-stopgap broke —
-    # it listed 10.109.3.201 which is now dead). The DURABLE closer is the
-    # pg-proxy's own privileged-role deny (`PG_PROXY_DENIED_ROLES`, staged in
-    # repo InstaNode-dev/instant-pg-proxy) — once that ships, these two IP lines
-    # become redundant belt-and-suspenders. Until then: re-`kubectl get pods -n
-    # instant -l app=instant-pg-proxy -o wide` and update these lines + reload on
-    # any proxy reschedule. Operator alert: see runbook §3a.
-    host    all             instanode_admin 10.109.4.113/32         reject
-    host    all             instanode_admin 10.109.0.101/32         reject
-    host    all             instant_cust    10.109.4.113/32         reject
-    host    all             instant_cust    10.109.0.101/32         reject
+    # AKS (2026-08-09 DO→Azure port): the four hardcoded reject lines that lived
+    # here were DOKS pod IPs (10.109.4.113, 10.109.0.101), LIVE-VERIFIED on
+    # 2026-06-06 against a cluster that no longer exists. They are REMOVED
+    # rather than translated: there is no Azure equivalent to copy, the AKS
+    # pg-proxy has never been scheduled, and leaving dead /32s in a pg_hba is
+    # worse than leaving them out — it reads as protection that is not there.
+    #
+    # ⚠️ THIS LEAVES THE SNAT HOLE OPEN ONCE instant-pg-proxy IS DEPLOYED.
+    # Recap of the mechanism: the proxy TERMINATES the inbound TCP and
+    # RE-ORIGINATES to postgres-customers, so an external `psql -U
+    # instanode_admin` arrives here SNAT'd to a proxy POD IP — inside
+    # 10.0.0.0/8 — and matches the in-cluster admin ALLOW immediately below,
+    # bypassing the 0.0.0.0/0 reject further down. Source-IP rules cannot
+    # distinguish it.
+    #
+    # GREENFIELD STATE (2026-08-09): instant-pg-proxy is NOT deployed on AKS
+    # (its manifest lives in the separate InstaNode-dev/instant-pg-proxy repo
+    # and is not applied), so nothing SNATs and the hole does not exist yet.
+    #
+    # BEFORE deploying instant-pg-proxy on AKS, close it with ONE of:
+    #   (a) DURABLE, preferred — ship the proxy with its privileged-role deny
+    #       (`PG_PROXY_DENIED_ROLES=instanode_admin,instant_cust,postgres`,
+    #       staged in the instant-pg-proxy repo). No IP churn, no pg_hba edits.
+    #   (b) STOPGAP — re-add per-IP rejects for the live proxy pods and accept
+    #       the churn dependency:
+    #         kubectl get pods -n instant -l app=instant-pg-proxy -o wide
+    #       then, for each IP, ABOVE the in-cluster allow below:
+    #         host  all  instanode_admin  <POD_IP>/32  reject
+    #         host  all  instant_cust     <POD_IP>/32  reject
+    #       and reload (SELECT pg_reload_conf()). These go stale on every
+    #       reschedule — that is exactly how the 2026-06-03 hand-stopgap broke.
+    # Operator alert + verification: POSTGRES-CUSTOMERS-LOCKDOWN-RUNBOOK.md §3a.
     #
     # ── in-cluster admin allow (legit consumers: provisioner/api/worker/migrator)
-    # All inside 10.0.0.0/8 (DOKS pod CIDR 10.109.0.0/16, svc CIDR 10.108.0.0/16
-    # — LIVE-VERIFIED 2026-06-06). Reached here AFTER the proxy-IP reject above,
-    # so a legit consumer pod (different IP from the proxy) still authenticates.
+    # All inside 10.0.0.0/8 — AKS Azure CNI Overlay pod CIDR 10.244.0.0/16 and
+    # service CIDR 10.0.0.0/16 both qualify (as did the retired DOKS 10.109/16 +
+    # 10.108/16). Reached here AFTER any proxy-IP reject above, so a legit
+    # consumer pod (different IP from the proxy) still authenticates.
     # This is the api/worker CUSTOMER_DATABASE_URL path (instanode_admin) AND the
     # provisioner POSTGRES_CUSTOMERS_URL path (instant_cust), plus migrator.
     host    all             instanode_admin 10.0.0.0/8              scram-sha-256

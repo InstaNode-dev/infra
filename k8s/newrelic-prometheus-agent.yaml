@@ -2,7 +2,8 @@
 # newrelic-prometheus-agent.yaml
 #
 # Closes the single biggest observability gap on the platform: there was NO
-# metrics ingestion pipeline in do-nyc3-instant-prod. Only newrelic-logging
+# metrics ingestion pipeline in the cluster (originally do-nyc3-instant-prod;
+# carried into the AKS rebuild 2026-08-09). Only newrelic-logging
 # (Fluent Bit), the APM Go agent, and OTLP traces shipped to New Relic — NO
 # Prometheus /metrics scraper. As a result ~46 New Relic alert conditions of
 # the form `FROM Metric WHERE metricName LIKE 'instant_%'` were INERT: they
@@ -19,7 +20,9 @@
 #
 # Chosen over:
 #   * the full nri-bundle (kube-state-metrics + infra DaemonSet + Pixie) —
-#     too heavy for the thin 6×(2cpu/4GB) prod pool. We only need the three
+#     too heavy for the node budget — it was already too heavy for DO's
+#     5×(2cpu/4GB) pool and is far too heavy for the single AKS
+#     Standard_B2as_v2 (2 vCPU / 8 GiB). We only need the three
 #     app /metrics endpoints, not full cluster-state monitoring.
 #   * self-hosted Prometheus + Grafana — another stateful pod with a PVC to
 #     back up. Agent mode keeps only a 30-min WAL and forwards everything to

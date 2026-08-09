@@ -47,7 +47,8 @@ rules:
     resources: ["secrets"]
     verbs: ["create", "get", "list", "delete"]
 
-  # EBS / local-path PVCs for DB data
+  # PVCs for dedicated per-tenant DB data (managed-csi on AKS; see
+  # K8S_STORAGE_CLASS in provisioner/deployment.yaml)
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["create", "get", "list", "delete"]

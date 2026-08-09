@@ -19,10 +19,48 @@
 #   2. instant-migrator    (instant-infra)   — CopyData + Verify on resource migrations
 #   3. instant-worker      (instant-infra)   — quota_infra storage tick (read-only INFO/dbStats/pg_database_size)
 #   4. instant-nats-proxy  (instant)         — only for NATS port 4222 (client-facing fan-out)
+#   5. instant-api         (instant)         — postgres-customers 5432 + nats 4222 (ADDED 2026-08-09, see below)
+#   6. instant-pg-proxy    (instant)         — postgres-customers 5432, the public customer connect path
 #
 # NetworkPolicy is additive. If a new caller is added (e.g. dashboard for a
 # read-only stat endpoint), add it here AND audit the corresponding egress
 # NetPol on the caller side.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# AKS (2026-08-09 DO→Azure port) — TWO CORRECTNESS FIXES + AN ENFORCEMENT NOTE
+# ─────────────────────────────────────────────────────────────────────────────
+# (1) `instant-api` was MISSING from the allow lists, and it is a real caller.
+#     Verified in the api repo 2026-08-09:
+#       - postgres-customers:5432 — `CUSTOMER_DATABASE_URL` is a non-optional env
+#         on k8s/app.yaml, and internal/handlers/readyz.go registers a
+#         `customer_db` check whenever it is set.
+#       - nats:4222 — internal/config/config.go:436 defaults `NATS_HOST` to
+#         `nats.instant-data.svc.cluster.local`; k8s/configmap.yaml sets it
+#         explicitly. This is the `/queue/new` path.
+#     Note the api lives in namespace `instant`, NOT `instant-infra`, so none of
+#     the three original instant-infra rules covered it. Applying this policy in
+#     its committed form would have default-denied the api and broken
+#     /readyz customer_db plus every queue provision — a fresh instance of the
+#     same class of bug as the pg-proxy trap below, and the reason this file
+#     was never safely applyable.
+#
+# (2) The `instant-pg-proxy` rule is now ACTIVE, not dormant. Greenfield is the
+#     right moment: a `from` selector that matches no pod is inert, so enabling
+#     it before the proxy exists costs nothing and removes the documented
+#     customer-breaking footgun for whoever deploys the proxy later.
+#
+# (3) ⚠️ ENFORCEMENT IS NOT AUTOMATIC ON AKS. NetworkPolicy objects are accepted
+#     by the API server on ANY cluster, but they are only ENFORCED if a network
+#     policy engine is enabled — and on AKS that is a CLUSTER-CREATION-TIME
+#     choice (`network_policy` = "cilium" | "azure" | "calico"). With Azure CNI
+#     Overlay and no engine, these four policies apply cleanly, `kubectl get
+#     networkpolicy` lists them, and they do NOTHING. That is the worst
+#     outcome — security theatre that reads as green.
+#     REQUIRED TERRAFORM INPUT: network_policy must be set at cluster create.
+#     Verify on the live cluster BEFORE trusting this file:
+#       az aks show -g <rg> -n <cluster> --query networkProfile.networkPolicy
+#       # must print "cilium" (or "azure"/"calico") — NOT null/empty
+#     On the retired DO cluster the engine was Cilium (DOKS default).
 #
 # Apply via: kubectl apply -f k8s/data/networkpolicy.yaml -n instant-data
 # (per `infra/k8s/APPLY-CHECKLIST.md`, NEVER `kubectl apply -f infra/k8s/app.yaml`).
@@ -43,18 +81,10 @@ metadata:
     # k8s/data/postgres-customers-lockdown.yaml. See
     # infra/POSTGRES-CUSTOMERS-LOCKDOWN-RUNBOOK.md.
     #
-    # CAVEAT — this policy does NOT list instant-pg-proxy. If the public
-    # customer connect path (pg.instanode.dev → ingress-nginx tcp-services →
-    # instant-pg-proxy → here) is in-cluster and this policy is enforced,
-    # customer connections through the proxy are BLOCKED unless the proxy's
-    # source is added below. As of 2026-06-06 the prod-apply state of THIS
-    # policy is unverified (infra has no auto-apply). The operator MUST verify
-    # in a maintenance window whether customers reach their db_<token>:
-    #   - if customer connectivity depends on the proxy AND this policy is
-    #     enforced, enable the dormant pg-proxy rule below;
-    #   - the admin boundary does NOT depend on this rule — pg_hba rejects the
-    #     admin role regardless of source, so enabling the proxy rule does NOT
-    #     re-open admin (the proxy only ever forwards customer usr_* roles).
+    # RESOLVED 2026-08-09 (AKS port): the pg-proxy rule below is no longer
+    # dormant — it is active. Enabling it does NOT widen the admin boundary:
+    # pg_hba rejects the admin roles regardless of source, and the proxy only
+    # ever forwards customer usr_* roles (it routes by token to db_<token>).
     sec.instanode.dev/incident: truehomie-db-drop-2026-06-03
 spec:
   podSelector:
@@ -85,22 +115,34 @@ spec:
           podSelector:
             matchLabels:
               app: instant-worker
-        # ── DORMANT: instant-pg-proxy (customer connect path) ────────────────
-        # Enable ONLY if the operator confirms in a maintenance window that
-        # customers reach their db_<token> THROUGH an in-cluster pg-proxy AND
-        # this NetworkPolicy is enforced (otherwise this is a no-op or, worse,
-        # silently the thing that has been blocking customers). The proxy
-        # forwards ONLY customer usr_* roles (token-routed); the admin role is
-        # still rejected at pg_hba, so this does NOT widen admin exposure.
-        # Adjust namespace/podSelector to match the real proxy deployment in
-        # the InstaNode-dev/instant-pg-proxy repo (its manifest is NOT in this
-        # repo). Example (verify the actual ns/labels before enabling):
-        # - namespaceSelector:
-        #     matchLabels:
-        #       kubernetes.io/metadata.name: instant
-        #   podSelector:
-        #     matchLabels:
-        #       app: instant-pg-proxy
+        # ── instant-api (ns `instant`) — ADDED 2026-08-09, see header note (1).
+        # CUSTOMER_DATABASE_URL / readyz customer_db check. Omitting this
+        # default-denies the api and breaks /readyz + customer-DB reads.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant
+          podSelector:
+            matchLabels:
+              app: instant-api
+        # ── instant-pg-proxy (customer connect path) — ACTIVE since 2026-08-09.
+        # pg.instanode.dev → Azure Standard LB → ingress-nginx tcp-services →
+        # instant-pg-proxy (ns `instant`) → here. Without this rule an enforced
+        # policy default-denies the proxy and BREAKS EVERY CUSTOMER POSTGRES
+        # CONNECTION — the single highest-blast-radius line in this file.
+        # The proxy forwards ONLY customer usr_* roles (token-routed); the admin
+        # roles are rejected at pg_hba regardless of source, so this does NOT
+        # widen admin exposure.
+        # ⚠️ The proxy's manifest lives in the SEPARATE InstaNode-dev/instant-pg-proxy
+        # repo, not here. The ns/labels below are the documented convention; if
+        # the proxy ever ships with different labels this rule silently stops
+        # matching and customers break. Confirm against the live cluster after
+        # deploying it: kubectl get pods -A -l app=instant-pg-proxy -o wide
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant
+          podSelector:
+            matchLabels:
+              app: instant-pg-proxy
       ports:
         - port: 5432
           protocol: TCP
@@ -224,6 +266,17 @@ spec:
           podSelector:
             matchLabels:
               app: instant-nats-proxy
+        # instant-api (ns `instant`) — ADDED 2026-08-09, see header note (1).
+        # NATS_HOST defaults to nats.instant-data.svc.cluster.local
+        # (api/internal/config/config.go:436) and k8s/configmap.yaml sets it
+        # explicitly. This is the /queue/new provisioning path; omitting it
+        # default-denies the api and every queue provision fails.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: instant
+          podSelector:
+            matchLabels:
+              app: instant-api
       ports:
         - port: 4222
           protocol: TCP

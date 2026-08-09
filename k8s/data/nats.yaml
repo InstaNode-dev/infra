@@ -82,20 +82,22 @@ data:
 #
 # 5Gi is conservative — sized to the JetStream config's max_file_store: 50GB
 # CEILING, not its current footprint; today's queue volume is tiny. Grow with
-# `kubectl edit pvc nats-jetstream-pvc` (do-block-storage / EBS support online
-# expansion when allowVolumeExpansion=true on the StorageClass) if file_store
-# usage approaches the request. Do NOT pre-allocate 50Gi — that is the hard
-# ceiling, not the working set.
+# `kubectl edit pvc nats-jetstream-pvc` (Azure Disk supports online expansion —
+# the built-in `managed-csi` StorageClass ships allowVolumeExpansion: true) if
+# file_store usage approaches the request. Do NOT pre-allocate 50Gi — that is
+# the hard ceiling, not the working set.
 #
-# storageClassName is OMITTED → falls back to the cluster default. On DOKS prod
-# that default is `do-block-storage` (confirmed in k8s/self-hosted-runner.yaml
-# :152 + k8s/data/postgres-customers.yaml, which use the same omit-for-default
-# convention). Local dev (Rancher Desktop / k3s) gets `local-path` via the
-# cluster default there, or layer a kustomize overlay setting
-# storageClassName: local-path. Block storage is RWO single-attach, which is
-# why the Deployment below MUST stay strategy.type: Recreate (a RollingUpdate
-# would Multi-Attach-deadlock the new pod against the old holder — same
-# constraint postgres-customers.yaml documents).
+# AKS (2026-08-09 DO→Azure port): storageClassName was previously OMITTED and
+# relied on the cluster default (`do-block-storage` on DOKS). It is now NAMED
+# explicitly as `managed-csi` (the AKS built-in StandardSSD_LRS class) so the
+# volume type is reviewable here and does not silently change with whichever
+# class a cluster marks default. Local dev (Rancher Desktop / k3s) overrides to
+# `local-path` via an overlay.
+#
+# Azure Disk is RWO single-attach, which is why the Deployment below MUST stay
+# strategy.type: Recreate (a RollingUpdate would Multi-Attach-deadlock the new
+# pod against the old holder — same constraint postgres-customers.yaml
+# documents).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -105,6 +107,7 @@ metadata:
     app: nats
 spec:
   accessModes: [ReadWriteOnce]
+  storageClassName: managed-csi
   resources:
     requests:
       storage: 5Gi

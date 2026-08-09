@@ -25,6 +25,26 @@ spec:
             - 256mb
             - --maxmemory-policy
             - allkeys-lru
+          # AKS (2026-08-09 DO→Azure port): requests ADDED.
+          # This pod declared none, which made it BestEffort QoS — the FIRST
+          # thing the kubelet evicts under memory pressure. On the single
+          # Standard_B2as_v2 node that is the wrong pod to sacrifice: this is the
+          # PLATFORM Redis (`REDIS_URL` in k8s/configmap.yaml), and the api uses
+          # it for rate limiting, quota gates, webhook receiver storage, and the
+          # nats-proxy token routing table. Evicting it degrades every one of
+          # those at once. The same BestEffort→Burstable fix was applied to the
+          # instant-data tier in R7 (2026-06-10) but never to this pod.
+          # request 64Mi covers idle + a small working set; limit 384Mi leaves
+          # headroom over the `--maxmemory 256mb` cap (Redis RSS runs above the
+          # dataset due to fragmentation). No cpu limit — Redis is
+          # single-threaded and latency-sensitive, so throttling it is worse
+          # than letting it burst.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 384Mi
           readinessProbe:
             exec:
               command: ["redis-cli", "ping"]

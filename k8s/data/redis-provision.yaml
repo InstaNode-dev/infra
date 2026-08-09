@@ -12,7 +12,11 @@ spec:
   resources:
     requests:
       storage: 2Gi
-  storageClassName: local-path
+  # AKS (2026-08-09 DO→Azure port): `local-path` is k3s/Rancher-Desktop only and
+  # DOES NOT EXIST on AKS — it would pin this PVC Pending forever. `managed-csi`
+  # is the AKS built-in StandardSSD_LRS class. Local dev overrides to
+  # `local-path` via an overlay.
+  storageClassName: managed-csi
 ---
 apiVersion: apps/v1
 kind: Deployment

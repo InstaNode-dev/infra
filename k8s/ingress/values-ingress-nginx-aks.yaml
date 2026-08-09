@@ -1,0 +1,102 @@
+# Helm values for ingress-nginx on AKS.
+#
+#   helm install ingress-nginx ingress-nginx/ingress-nginx \
+#     -n ingress-nginx --create-namespace \
+#     -f k8s/ingress/values-ingress-nginx-aks.yaml
+#
+# ADDED 2026-08-09 (AKS port). See k8s/ingress/README.md for the install order,
+# the DNS-before-certificate ordering trap, and why the L4 port map lives here
+# instead of in a hand-written tcp-services ConfigMap.
+controller:
+  # Single node at rest — 2 replicas share a fate domain and buy nothing.
+  # Raise together with the system node pool.
+  replicaCount: 1
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  service:
+    type: LoadBalancer
+    annotations:
+      # Health-probe the controller's own /healthz rather than letting the
+      # Azure Standard LB do a bare TCP connect. Required once the `tcp:` ports
+      # below exist, otherwise the LB probes an arbitrary L4 listener and can
+      # mark the whole backend pool unhealthy.
+      service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: /healthz
+      # Internal LB? No — this is the public entrypoint.
+      service.beta.kubernetes.io/azure-load-balancer-internal: "false"
+      # ⚠️ OPERATOR / TERRAFORM: uncomment BOTH and fill from Terraform outputs.
+      # A static Public IP is not optional here: with a dynamic IP, Azure
+      # reassigns on every LB recreate, and every DNS record plus Let's Encrypt
+      # validation breaks with no error anyone will see until a cert expires.
+      # The resource-group annotation is required whenever the IP lives in the
+      # cluster's *node* resource group rather than the MC_* group AKS manages.
+      # service.beta.kubernetes.io/azure-load-balancer-resource-group: <ip-resource-group>
+    # loadBalancerIP: <static public IP from Terraform>
+
+    # Preserve the client source IP. The api derives its anonymous-abuse
+    # fingerprint from SHA256(/24 subnet + ASN) (CLAUDE.md rule 6); under the
+    # default `Cluster` policy every request is SNAT'd to a node IP, so every
+    # anonymous user collapses into ONE fingerprint bucket and the
+    # 5-provisions-per-day dedup cap trips for everybody simultaneously.
+    # Caveat: `Local` only routes to nodes actually running a controller pod —
+    # correct here (1 node, 1 replica), revisit if replicaCount grows past the
+    # node count.
+    externalTrafficPolicy: Local
+
+  config:
+    # Global default body size. The per-Ingress annotation on
+    # 10-api-ingress.yaml raises api.instanode.dev to 64m for the /deploy/new
+    # tarball upload; this covers the per-deploy Ingresses the api generates at
+    # runtime, which carry no such annotation.
+    proxy-body-size: "32m"
+    # Real client IP through the Azure LB (paired with externalTrafficPolicy:
+    # Local above) so X-Forwarded-For is trustworthy for the fingerprint.
+    use-forwarded-headers: "true"
+    # Log the request ID so an nginx 4xx/5xx can be correlated with the api's
+    # structured logs in New Relic.
+    log-format-escape-json: "true"
+
+  metrics:
+    # ServiceMonitor is intentionally NOT enabled — there is no Prometheus
+    # Operator in this cluster. The newrelic-prometheus-agent
+    # (k8s/newrelic-prometheus-agent.yaml) scrapes by pod annotation instead.
+    enabled: true
+
+  admissionWebhooks:
+    # The validating webhook rejects malformed Ingress objects at admission.
+    # Keep it: the api CREATES Ingresses at runtime for every customer deploy,
+    # so a malformed one should fail loudly at the API server rather than
+    # silently break the shared nginx config for every other tenant.
+    enabled: true
+
+# ── L4 / TCP passthrough ──────────────────────────────────────────────────────
+# Generates the tcp-services ConfigMap AND adds each port to the LoadBalancer
+# Service. A hand-written ConfigMap would do only the first half, and the port
+# would never reach the cluster.
+#
+# Format: "<external port>": "<namespace>/<service>:<port>"
+tcp:
+  # NATS — the only one of the four whose proxy manifest lives in THIS repo
+  # (k8s/nats-proxy/deployment.yaml). Safe to enable at bring-up.
+  "4222": "instant/instant-nats-proxy:4222"
+
+  # ⚠️ The three below are backed by proxies in the SEPARATE
+  # InstaNode-dev/instant-pg-proxy family of repos, which are NOT part of this
+  # bring-up. An entry naming a Service that does not exist makes the controller
+  # log a config error on every reload. Uncomment each as its proxy is deployed.
+  #
+  # ⚠️ BEFORE uncommenting the postgres line, close the admin-role SNAT hole —
+  # see k8s/data/postgres-customers-lockdown.yaml. Once pg.instanode.dev is
+  # publicly routed through an in-cluster proxy, an external
+  # `psql -U instanode_admin` arrives SNAT'd to a pod IP and matches the
+  # in-cluster admin allow rule. That is the truehomie-db-drop vector.
+  #
+  # "5432":  "instant/instant-pg-proxy:5432"
+  # "6379":  "instant/instant-redis-proxy:6379"
+  # "27017": "instant/instant-mongo-proxy:27017"
