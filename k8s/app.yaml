@@ -228,8 +228,20 @@ spec:
             # image; DEPLOY_DOMAIN is the apex DNS for *.deployment.<>;
             # CERT_ISSUER is the cert-manager ClusterIssuer that mints TLS
             # certs for each deployed app's ingress.
+            # REDACTED → instanode-dev, 2026-08-12. The org is not a secret —
+            # the api/worker/provisioner image references in this same file
+            # already name it — and the placeholder silently broke the wedge:
+            # Kaniko would push to a nonexistent org and every /deploy/new
+            # would fail at push, after a successful build.
+            #
+            # ⚠️ Still needs a GHCR credential with write:packages mounted into
+            # the build pods. Per AZURE-MIGRATION-PLAN §1 that MUST be a second,
+            # push-only token — not the `ghcr-pull` secret — because the build
+            # pod runs a hostile customer's Dockerfile and can read whatever is
+            # mounted into it. One token doing both jobs lets any customer push
+            # over instant-api.
             - name: BUILD_IMAGE_REGISTRY
-              value: "ghcr.io/REDACTED/instant-userapp"
+              value: "ghcr.io/instanode-dev/instant-userapp"
             - name: DEPLOY_DOMAIN
               value: "deployment.instanode.dev"
             - name: CERT_ISSUER
