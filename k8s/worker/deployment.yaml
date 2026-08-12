@@ -247,8 +247,27 @@ spec:
             - name: WORKER_PG_MAX_IDLE_CONNS
               value: "1"
             # ── Email provider routing ───────────────────────────────────────
-            - name: EMAIL_PROVIDER
-              value: "brevo"
+            # DISABLED on the AKS greenfield (2026-08-12). `EMAIL_PROVIDER=brevo`
+            # is a HARD dependency on BREVO_API_KEY: without it StartWorkers
+            # returns `brevo: BREVO_API_KEY required when EMAIL_PROVIDER=brevo`,
+            # River never starts, and main.go exits on purpose so k8s restarts
+            # the pod — i.e. the whole worker CrashLoopBackOffs over email
+            # config, taking the TTL reaper, quota scans, deploy lifecycle and
+            # billing reconcilers down with it. BREVO_API_KEY is not in
+            # k8s/secrets.yaml or k8s/infra-secrets.yaml either, so no fresh
+            # cluster could ever have satisfied it.
+            #
+            # Leaving it unset disables email and lets every other job run,
+            # which costs nothing today: the Brevo sender noreply@instanode.dev
+            # is still unvalidated, so Brevo 201s and then internally rejects
+            # every send (memory project_brevo_sender_not_validated). The email
+            # provider cutover is explicitly out of scope for the migration —
+            # AZURE-MIGRATION-PLAN §5.4.
+            #
+            # To re-enable: add BREVO_API_KEY to instant-infra-secrets, add a
+            # secretKeyRef for it here, THEN set EMAIL_PROVIDER back to "brevo".
+            # - name: EMAIL_PROVIDER
+            #   value: "brevo"
             # ── Internal API URL for worker→api callbacks ────────────────────
             - name: INSTANT_API_INTERNAL_URL
               value: "http://instant-api.instant.svc.cluster.local:8080"
