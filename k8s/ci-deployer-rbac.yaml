@@ -103,3 +103,34 @@ subjects:
   - kind: ServiceAccount
     name: ci-deployer
     namespace: kube-system
+
+---
+# Long-lived token for the KUBECONFIG_B64 repo secret in api / worker /
+# provisioner / infra.
+#
+# ADDED 2026-08-12 (AKS bring-up). `kubectl create token ci-deployer` is the
+# modern path but AKS silently clamps --duration to 24h ("requested expiration
+# of 31536000 seconds shortened to 86400 seconds"), which would red every CI
+# deploy a day after issuance — and it fails at deploy time, not at issue time.
+# A ServiceAccount-token Secret is the supported way to get a non-expiring
+# credential for an external CI system.
+#
+# The Secret ships EMPTY: kube-controller-manager populates .data.token and
+# .data.ca.crt from the annotation. Nothing secret is committed here.
+#
+# Build the kubeconfig with:
+#   SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+#   CA=$(kubectl get secret ci-deployer-token -n kube-system -o jsonpath='{.data.ca\.crt}')
+#   TOKEN=$(kubectl get secret ci-deployer-token -n kube-system -o jsonpath='{.data.token}' | base64 -d)
+# then base64 the file and paste it as the KUBECONFIG_B64 repo secret.
+#
+# Rotate by deleting this Secret and re-applying: the controller mints a new
+# token, and every repo secret must be updated in the same pass.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ci-deployer-token
+  namespace: kube-system
+  annotations:
+    kubernetes.io/service-account.name: ci-deployer
+type: kubernetes.io/service-account-token
