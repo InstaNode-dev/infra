@@ -67,6 +67,31 @@ kubectl apply -f "$SCRIPT_DIR/infra-secrets.yaml"     # instant-infra-secrets (n
 kubectl apply -f "$SCRIPT_DIR/configmap.yaml"
 kubectl apply -f "$SCRIPT_DIR/migrations-configmap.yaml"
 
+# ── 3b. instant-plans ConfigMap ──────────────────────────────────────────────
+# worker/deployment.yaml mounts ConfigMap `instant-plans` at /app/plans.yaml
+# WITHOUT `optional: true`, but nothing in this repo ever created it — on the
+# AKS greenfield bring-up (2026-08-12) that left instant-worker stuck in
+# ContainerCreating for as long as it took to read the kubelet event
+# (`MountVolume.SetUp failed for volume "plans": configmap "instant-plans" not
+# found`). It cannot be committed here as a static manifest: the single source
+# of truth is `api/plans.yaml` (CLAUDE.md rule 3), and a copy in this repo is a
+# second source that silently drifts on every pricing change.
+#
+# Generate it from the api checkout instead. PLANS_YAML must point at the SAME
+# commit as the deployed instant-api image, or the worker enforces different
+# tier limits than the api advertises.
+PLANS_YAML="${PLANS_YAML:-$SCRIPT_DIR/../../api/plans.yaml}"
+if [ -s "$PLANS_YAML" ]; then
+  kubectl create configmap instant-plans -n instant-infra \
+    --from-file=plans.yaml="$PLANS_YAML" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  echo "  ✓ instant-plans from $PLANS_YAML"
+else
+  echo "  ⚠️  PLANS_YAML not found at $PLANS_YAML — instant-worker will sit in"
+  echo "     ContainerCreating until ConfigMap instant-plans exists. Re-run with:"
+  echo "       PLANS_YAML=/path/to/api/plans.yaml $0"
+fi
+
 # GHCR pull secrets. NOT templated in this repo (they carry a real PAT). Every
 # backend Deployment lists `ghcr-pull` plus one of `ghcr-org-pull`/`ghcr-regrade`
 # in imagePullSecrets; without them every pod lands in ImagePullBackOff.

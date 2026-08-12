@@ -59,17 +59,30 @@ data:
       max_file_store: 50GB
     }
 
-    # Operator + system account loaded from /etc/nats-operator/
-    # (mounted from `nats-operator` Secret). The initContainer expands
-    # /etc/nats-operator/*.txt into the include below.
-    include "operator.conf"
-
     # Resolver: memory mode pre-loads the SYS account claim; tenant
     # accounts get added via $SYS.REQ.CLAIMS.UPDATE at provisioning time.
     # When the cluster gets bigger, switch to `type: full` with a
     # PVC-backed `dir: /data/jwt`. Memory mode is fine through 100s of
     # accounts and avoids a second mount point during the cutover.
+    #
+    # MUST precede the operator.conf include: that file carries
+    # `resolver_preload`, and nats-server rejects a preload declared before
+    # the resolver it preloads into.
     resolver: MEMORY
+
+    # NOTE: no `include` here. The operator + system-account block is
+    # CONCATENATED onto a copy of this file by the `render-operator-conf`
+    # initContainer, and nats-server is started against that copy
+    # (/etc/nats/nats.conf), not against this ConfigMap mount.
+    #
+    # Why not `include "operator.conf"`: nats-server resolves EVERY include
+    # path — relative or absolute — against the directory of the config file
+    # naming it. With the server reading /etc/nats-base/nats.conf, both
+    #   include "operator.conf"           → /etc/nats-base/operator.conf
+    #   include "/etc/nats/operator.conf" → /etc/nats-base/etc/nats/operator.conf
+    # miss the initContainer's output and CrashLoopBackOff the pod with the
+    # Secret correctly in place. Both were observed on the AKS greenfield
+    # bring-up, 2026-08-12. Concatenation removes the path question entirely.
 
 ---
 # JetStream durability (R6, 2026-06-10). Before this PVC, the JetStream
@@ -136,10 +149,15 @@ spec:
       labels:
         app: nats
     spec:
-      # Init container: render /etc/nats/operator.conf from the
-      # `nats-operator` Secret. We don't put the JWTs in the ConfigMap
-      # directly because they contain the system-account JWT which is
-      # sensitive (anyone holding it can revoke any account).
+      # Init container: assemble the effective config at /etc/nats/nats.conf
+      # = the static ConfigMap body + the operator/system-account block read
+      # from the `nats-operator` Secret. We don't put the JWTs in the
+      # ConfigMap directly because the system-account JWT is sensitive
+      # (anyone holding it can revoke any account).
+      #
+      # Concatenation, not `include` — see the ConfigMap comment above for
+      # why nats-server's include-path resolution makes the include form
+      # unworkable across two mounts.
       initContainers:
       - name: render-operator-conf
         image: alpine:3.20
@@ -148,7 +166,8 @@ spec:
         - -c
         - |
           set -eu
-          cat <<EOF > /etc/nats/operator.conf
+          cp /etc/nats-base/nats.conf /etc/nats/nats.conf
+          cat <<EOF >> /etc/nats/nats.conf
           operator: "$(cat /secrets/OPERATOR_JWT)"
           system_account: "$(cat /secrets/SYS_ACCOUNT_PUBLIC_KEY)"
           resolver_preload: {
@@ -156,6 +175,9 @@ spec:
           }
           EOF
         volumeMounts:
+        - name: nats-config
+          mountPath: /etc/nats-base
+          readOnly: true
         - name: nats-operator-secret
           mountPath: /secrets
           readOnly: true
@@ -166,7 +188,8 @@ spec:
         image: nats:2.10-alpine
         args:
         - "-c"
-        - "/etc/nats-base/nats.conf"
+        # The initContainer's assembled copy, NOT the raw ConfigMap mount.
+        - "/etc/nats/nats.conf"
         ports:
         - name: client
           containerPort: 4222

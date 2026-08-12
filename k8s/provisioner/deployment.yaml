@@ -104,14 +104,31 @@ spec:
               value: "dev"
             - name: PROVISIONER_PORT
               value: "50051"
-            # Backend selection — prod runs the k8s backend for postgres +
-            # redis (each tenant gets a dedicated pod via the provisioner's
-            # k8s.Client). Local dev (Rancher Desktop) overrides these to
-            # "local" via a kustomize overlay. Defaulting to "k8s" here so
-            # `kubectl apply` doesn't silently downgrade prod's backend
-            # selection.
+            # ── Backend selection — SHARED, not dedicated ─────────────────────
+            # "local" = the shared data tier in `instant-data`
+            # (postgres-customers / redis-provision / mongodb / nats). "k8s" =
+            # a DEDICATED pod-per-resource in its own `instant-customer-<token>`
+            # namespace, which the code applies to EVERY tier, not just Team
+            # (provisioner/internal/backend/postgres/backend.go:83).
+            #
+            # CORRECTED 2026-08-12 on the AKS greenfield bring-up. These four
+            # keys shipped as "k8s", which does not match what DO prod actually
+            # ran (194 customer databases lived on the single shared
+            # postgres-customers pod) and does not match the product: dedicated
+            # infrastructure is a Team-tier promise, and Team is not rolled out.
+            # Verified live before changing: one anonymous `POST /db/new`
+            # created namespace instant-customer-<token> with a whole Postgres
+            # Deployment + NodePort Service and NO row in instant_customers.
+            #
+            # On this node the dedicated path is also physically capped:
+            # Standard_B2as_v2 allows maxDataDisks=4 and the data tier already
+            # binds all four (postgres-customers, redis-provision, mongodb,
+            # nats-jetstream). Anonymous tenants get no PVC so they merely eat
+            # RAM, but the first PVC-backed paid tenant would hang Pending
+            # forever — the silent first-paying-customer failure the migration
+            # plan called out in §6.1. Re-enabling dedicated needs a larger SKU.
             - name: POSTGRES_PROVISION_BACKEND
-              value: "k8s"
+              value: "local"
             # POSTGRES_CUSTOMERS_URL is the admin URL the provisioner uses
             # to CREATE/DROP customer databases on shared Postgres. The real
             # password lives in instant-infra-secrets — sourcing it here so
@@ -122,8 +139,10 @@ spec:
                   name: instant-infra-secrets
                   key: POSTGRES_CUSTOMERS_URL
                   optional: true
+            # See the POSTGRES_PROVISION_BACKEND block above for why this is
+            # "local" (shared redis-provision) rather than a pod per tenant.
             - name: REDIS_PROVISION_BACKEND
-              value: "k8s"
+              value: "local"
             - name: REDIS_PROVISION_HOST
               value: "redis-provision.instant-data.svc.cluster.local:6379"
             # MONGO_ADMIN_URI was historically inlined here as
@@ -198,8 +217,14 @@ spec:
               value: "0"
             # ── Kubernetes dedicated backend (Team tier) ──────────────────────
             # See docs/ops-k8s-dedicated.md for the full EKS deployment guide.
+            #
+            # OFF as of 2026-08-12 (AKS greenfield). Team tier is not rolled
+            # out, and the single Standard_B2as_v2 node has zero spare data
+            # disks for per-tenant PVCs — see the POSTGRES_PROVISION_BACKEND
+            # block above. Flip back to "true" together with the four
+            # *_PROVISION_BACKEND keys, on a SKU with disk headroom.
             - name: K8S_DEDICATED_BACKEND
-              value: "true"
+              value: "false"
             # K8S_EXTERNAL_HOST is the public-DNS host the provisioner stamps
             # into customer connection URLs that get routed in via TCP-router
             # (pg.instanode.dev → ingress-nginx tcp-services-configmap →
@@ -300,19 +325,17 @@ spec:
             #       name: instant-infra-secrets
             #       key: OTEL_EXPORTER_OTLP_HEADERS
             #       optional: true
-            # ── Mongo / Queue backend selection (prod uses k8s) ───────────────
-            # Defaults flip from `local` to `k8s` in prod via these env vars.
-            # Without them the provisioner would treat prod as a local
-            # cluster and call pure-Go local backends instead of k8s. The
-            # POSTGRES_PROVISION_BACKEND + REDIS_PROVISION_BACKEND defaults
-            # ABOVE are still "local"; in prod the auto-deploy or
-            # post-apply patch overrides them — codifying the prod intent
-            # here so the gap is documented, but the patch from the live
-            # source is owned by an operator decision (see APPLY-CHECKLIST.md).
+            # ── Mongo / Queue backend selection ───────────────────────────────
+            # "local" = the shared mongodb / nats pods in `instant-data`.
+            # Corrected from "k8s" 2026-08-12 for the same reason as
+            # POSTGRES_PROVISION_BACKEND above — dedicated pod-per-tenant is a
+            # Team-tier promise that is not rolled out and does not fit this
+            # node. The stale comment this replaces claimed the postgres/redis
+            # defaults above were "local" while they were in fact set to "k8s".
             - name: MONGO_PROVISION_BACKEND
-              value: "k8s"
+              value: "local"
             - name: QUEUE_PROVISION_BACKEND
-              value: "k8s"
+              value: "local"
             # ── Public hostnames for issued connection URLs ───────────────────
             # The provisioner builds the host portion of `connection_url` for
             # customer-facing tokens from these. In local dev they default to
