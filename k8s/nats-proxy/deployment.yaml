@@ -48,7 +48,9 @@ spec:
         - name: ghcr-pull
       containers:
         - name: nats-proxy
-          image: ghcr.io/REDACTED/instant-nats-proxy:v0.1.0
+          # REDACTED → the real namespace, and v0.1.0 → v0.1.3, 2026-08-12.
+          # v0.1.3 is the newest published tag; prod ran ahead of this manifest.
+          image: ghcr.io/mastermanas805/instant-nats-proxy:v0.1.3
           imagePullPolicy: IfNotPresent
           ports:
             - name: nats
@@ -61,6 +63,12 @@ spec:
               value: "redis://redis.instant.svc.cluster.local:6379"
             - name: NP_ROUTE_PREFIX
               value: "nats_route_by_token:"
+            # Shared queue backend: every tenant is a subject prefix on the one
+            # nats server, so there are no per-token routes to look up and this
+            # fallback is the whole routing story. Same shape as the other three
+            # proxies — see k8s/proxies/README.md.
+            - name: NP_FALLBACK_BACKEND
+              value: "nats.instant-data.svc.cluster.local:4222"
           resources:
             requests:
               cpu: 50m

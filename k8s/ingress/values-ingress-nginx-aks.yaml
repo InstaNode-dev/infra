@@ -95,17 +95,24 @@ tcp:
   # (k8s/nats-proxy/deployment.yaml). Safe to enable at bring-up.
   "4222": "instant/instant-nats-proxy:4222"
 
-  # ⚠️ The three below are backed by proxies in the SEPARATE
-  # InstaNode-dev/instant-pg-proxy family of repos, which are NOT part of this
-  # bring-up. An entry naming a Service that does not exist makes the controller
-  # log a config error on every reload. Uncomment each as its proxy is deployed.
+  # ENABLED 2026-08-12. These three were commented out because their proxies
+  # lived only in the separate InstaNode-dev/instant-pg-proxy family of repos
+  # and had no manifest here. They now do — k8s/proxies/ — so the Services these
+  # entries name exist and the controller no longer logs a config error.
   #
-  # ⚠️ BEFORE uncommenting the postgres line, close the admin-role SNAT hole —
-  # see k8s/data/postgres-customers-lockdown.yaml. Once pg.instanode.dev is
-  # publicly routed through an in-cluster proxy, an external
-  # `psql -U instanode_admin` arrives SNAT'd to a pod IP and matches the
-  # in-cluster admin allow rule. That is the truehomie-db-drop vector.
+  # ⚠️ The admin-role SNAT hole this block used to warn about is real and is
+  # closed by the PROXY, not by pg_hba. Once pg.instanode.dev is publicly
+  # routed, an external `psql -U instanode_admin` arrives SNAT'd to an
+  # ingress pod IP and therefore MATCHES the in-cluster admin allow rule in
+  # k8s/data/postgres-customers-lockdown.yaml — pg_hba cannot tell it apart.
+  # That is the truehomie-db-drop vector.
   #
-  # "5432":  "instant/instant-pg-proxy:5432"
-  # "6379":  "instant/instant-redis-proxy:6379"
-  # "27017": "instant/instant-mongo-proxy:27017"
+  # The mitigation is PG_PROXY_DENIED_ROLES on instant-pg-proxy
+  # (k8s/proxies/pg-proxy.yaml), which rejects instanode_admin / instant_cust /
+  # postgres at the proxy, before authentication. DO NOT enable the 5432 line
+  # against any pg-proxy that lacks that env var, and do not "simplify" this by
+  # pointing 5432 straight at instant-data/postgres-customers — that bypasses
+  # the only layer capable of making the distinction.
+  "5432": "instant/instant-pg-proxy:5432"
+  "6379": "instant/instant-redis-proxy:6379"
+  "27017": "instant/instant-mongo-proxy:27017"
