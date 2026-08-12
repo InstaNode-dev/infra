@@ -1,0 +1,99 @@
+---
+# instant-pg-proxy — terminates pg.instanode.dev:5432 for customer Postgres.
+#
+# ADDED 2026-08-12. This ran on DOKS as a hand-applied object with no manifest
+# anywhere in git; see k8s/proxies/README.md. Image recovered from the
+# operator's private GHCR namespace.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instant-pg-proxy
+  namespace: instant
+  labels:
+    app: instant-pg-proxy
+spec:
+  # Stateless and per-connection, so it scales horizontally. 1 replica on a
+  # single-node cluster: a second replica shares the node's fate domain and buys
+  # no availability, only RAM. Raise with the node count, not before.
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: instant-pg-proxy
+  template:
+    metadata:
+      labels:
+        app: instant-pg-proxy
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: pg-proxy
+          image: ghcr.io/mastermanas805/instant-pg-proxy:v0.2.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: PG_PROXY_LISTEN
+              value: ":5432"
+            # Route registry — populated only by the DEDICATED (k8s) provisioning
+            # backend. Wired unconditionally so flipping dedicated back on needs
+            # no manifest change.
+            - name: PG_PROXY_REDIS_URL
+              value: "redis://redis.instant.svc.cluster.local:6379"
+            - name: PG_PROXY_ROUTE_PREFIX
+              value: "pg_route:"
+            # THE routing path on this cluster, not a degraded one: the shared
+            # backend puts every customer database on this single instance, so
+            # there are no per-tenant routes to look up. See README.md.
+            - name: PG_PROXY_FALLBACK_BACKEND
+              value: "postgres-customers.instant-data.svc.cluster.local:5432"
+            # ⚠️ SECURITY CONTROL — not a convenience setting.
+            # These are superuser roles on the shared customer Postgres. The
+            # proxy is the only layer that can refuse them: connections reach
+            # postgres SNAT'd to a pod IP, so pg_hba sees an in-cluster source
+            # and cannot tell a customer from an operator. Deleting this env var
+            # silently re-opens the path implicated in the 2026-06-03
+            # truehomie-db DROP incident.
+            - name: PG_PROXY_DENIED_ROLES
+              value: "instanode_admin,instant_cust,postgres"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: instant-pg-proxy
+  namespace: instant
+  labels:
+    app: instant-pg-proxy
+spec:
+  type: ClusterIP
+  selector:
+    app: instant-pg-proxy
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP

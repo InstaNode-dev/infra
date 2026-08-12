@@ -1,0 +1,81 @@
+---
+# instant-redis-proxy — terminates redis.instanode.dev:6379 for customer caches.
+# ADDED 2026-08-12; see k8s/proxies/README.md for why no manifest existed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instant-redis-proxy
+  namespace: instant
+  labels:
+    app: instant-redis-proxy
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: instant-redis-proxy
+  template:
+    metadata:
+      labels:
+        app: instant-redis-proxy
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: redis-proxy
+          image: ghcr.io/mastermanas805/instant-redis-proxy:v0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          env:
+            - name: RP_LISTEN
+              value: ":6379"
+            - name: RP_REDIS_URL
+              value: "redis://redis.instant.svc.cluster.local:6379"
+            - name: RP_ROUTE_PREFIX
+              value: "redis_route:"
+            # Shared backend: every customer cache is an ACL user on this one
+            # instance, so there are no per-tenant routes. Note this is the
+            # PROVISION Redis (instant-data), not the platform Redis above.
+            - name: RP_FALLBACK_BACKEND
+              value: "redis-provision.instant-data.svc.cluster.local:6379"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: instant-redis-proxy
+  namespace: instant
+  labels:
+    app: instant-redis-proxy
+spec:
+  type: ClusterIP
+  selector:
+    app: instant-redis-proxy
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      protocol: TCP

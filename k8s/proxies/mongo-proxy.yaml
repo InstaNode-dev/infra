@@ -1,0 +1,87 @@
+---
+# instant-mongo-proxy — terminates mongo.instanode.dev:27017 for customer NoSQL.
+# ADDED 2026-08-12; see k8s/proxies/README.md for why no manifest existed.
+#
+# Image tag note: v0.4.2-no-awaitable is the newest of seven published tags and
+# the end of a debugging sequence (synth-hello → no-topology → fresh-topology →
+# no-awaitable) that fixed MongoDB wire-protocol handshake demuxing. The stale
+# mongo-proxy/KNOWN_ISSUE.md describes the ORIGINAL deadlock and is still cited
+# as current in places — the fix landed in mongo-proxy/internal/proxy/hello.go
+# and was confirmed working end-to-end in the 2026-05-14 bug bash. Do not
+# downgrade on the strength of that document.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instant-mongo-proxy
+  namespace: instant
+  labels:
+    app: instant-mongo-proxy
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: instant-mongo-proxy
+  template:
+    metadata:
+      labels:
+        app: instant-mongo-proxy
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: mongo-proxy
+          image: ghcr.io/mastermanas805/instant-mongo-proxy:v0.4.2-no-awaitable
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: mongo
+              containerPort: 27017
+              protocol: TCP
+          env:
+            - name: MP_LISTEN
+              value: ":27017"
+            - name: MP_REDIS_URL
+              value: "redis://redis.instant.svc.cluster.local:6379"
+            - name: MP_ROUTE_PREFIX
+              value: "mongo_route:"
+            # Shared backend: every customer database lives on this one mongod.
+            - name: MP_FALLBACK_BACKEND
+              value: "mongodb.instant-data.svc.cluster.local:27017"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            tcpSocket:
+              port: 27017
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 27017
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: instant-mongo-proxy
+  namespace: instant
+  labels:
+    app: instant-mongo-proxy
+spec:
+  type: ClusterIP
+  selector:
+    app: instant-mongo-proxy
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: 27017
+      protocol: TCP
