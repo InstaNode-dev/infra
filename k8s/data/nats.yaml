@@ -59,16 +59,37 @@ data:
       max_file_store: 50GB
     }
 
-    # Resolver: memory mode pre-loads the SYS account claim; tenant
-    # accounts get added via $SYS.REQ.CLAIMS.UPDATE at provisioning time.
-    # When the cluster gets bigger, switch to `type: full` with a
-    # PVC-backed `dir: /data/jwt`. Memory mode is fine through 100s of
-    # accounts and avoids a second mount point during the cutover.
+    # Resolver: FULL (directory-backed), changed from MEMORY 2026-08-12.
+    #
+    # The previous comment here claimed memory mode was fine because "tenant
+    # accounts get added via $SYS.REQ.CLAIMS.UPDATE at provisioning time".
+    # That is not how the memory resolver works. MEMORY is STATIC: the only
+    # accounts it will ever know are the ones in `resolver_preload`, and it
+    # does not service claims-update requests at all. So the per-tenant
+    # isolation path could never have functioned on this config — the api
+    # signs an account JWT, pushes it, the push is a no-op, and the customer
+    # receives a credential for an account the server has never heard of.
+    # Symptom at the customer: Authorization Violation on connect.
+    #
+    # `type: full` persists pushed account JWTs under dir and services
+    # $SYS.REQ.CLAIMS.UPDATE. dir lives on the SAME PVC as JetStream (a
+    # subdirectory, not a second volume) so account claims survive restarts
+    # for the same reason stream state does — losing them would silently
+    # de-authorise every existing tenant on a pod bounce.
+    #
+    # allow_delete stays false: deleting an account is a destructive,
+    # audited operation and must not be reachable from the provisioning path.
     #
     # MUST precede the operator.conf include: that file carries
     # `resolver_preload`, and nats-server rejects a preload declared before
     # the resolver it preloads into.
-    resolver: MEMORY
+    resolver {
+      type: full
+      dir: "/data/jetstream/jwt"
+      allow_delete: false
+      interval: "2m"
+      timeout: "1.9s"
+    }
 
     # NOTE: no `include` here. The operator + system-account block is
     # CONCATENATED onto a copy of this file by the `render-operator-conf`

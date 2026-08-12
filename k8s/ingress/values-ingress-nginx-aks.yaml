@@ -12,6 +12,37 @@ controller:
   # Raise together with the system node pool.
   replicaCount: 1
 
+  # ── nginx MUST be the default IngressClass ───────────────────────────────
+  # ADDED 2026-08-12, after the first real customer deploy on AKS served the
+  # `Kubernetes Ingress Controller Fake Certificate` on a healthy-looking app.
+  #
+  # The api creates each deployed app's Ingress with only a
+  # `cert-manager.io/cluster-issuer` annotation — it never sets
+  # `ingressClassName`, and there is no `IngressClassName` assignment anywhere
+  # in api/internal/providers/compute/k8s/. With no default class, ingress-nginx
+  # ignores those Ingresses entirely and answers the hostname from its default
+  # backend, which is what serves the fake cert.
+  #
+  # The failure is maximally deceptive, which is why this comment is long:
+  #   - the Kaniko build succeeds and pushes
+  #   - the app pod runs
+  #   - the cert-manager Certificate reaches Ready=True (its HTTP-01 solver
+  #     Ingress DOES carry class nginx, so issuance works fine)
+  #   - GET https://<app> completes a TLS handshake
+  # …and the customer still gets an untrusted certificate. Every gate short of
+  # asserting the certificate ISSUER passes. This is the exact scenario
+  # .claude/skills/instant-verify was written around.
+  #
+  # DOKS almost certainly had this set at install time; the greenfield rebuild
+  # is where the omission surfaced. Making it default fixes every present and
+  # future app Ingress without an api change. The alternative — stamping
+  # ingressClassName in the api — is the more explicit fix and worth doing, but
+  # it does not retro-fix Ingresses already created.
+  ingressClassResource:
+    name: nginx
+    enabled: true
+    default: true
+
   resources:
     requests:
       cpu: 100m
