@@ -151,6 +151,34 @@ spec:
               value: "local"
             - name: REDIS_PROVISION_HOST
               value: "redis-provision.instant-data.svc.cluster.local:6379"
+            # REDIS_PROVISION_URL — the CREDENTIALED admin DSN, and the reason
+            # /cache/new works at all. redis-provision runs with --requirepass;
+            # REDIS_PROVISION_HOST above is a bare host:port that structurally
+            # cannot carry a password, so the provisioner's admin client
+            # connected unauthenticated and every ACL SETUSER died with
+            # `ERR Protocol error: unauthenticated multibulk length` — a 503 on
+            # every single /cache/new. Added 2026-08-12 with provisioner PR #62.
+            #
+            # Not a regression: DO prod ran the DEDICATED redis backend (a pod
+            # per token), so this shared path had never executed against a real
+            # cluster until the Azure rebuild switched to shared backends.
+            #
+            # ⚠️ CROSS-NAMESPACE COPY. The source of truth is
+            # REDIS_PROVISION_PASSWORD in `instant-data-secrets`, namespace
+            # instant-data (see k8s/data/redis-provision.yaml). Kubernetes
+            # cannot reference a Secret across namespaces, so the value is
+            # DUPLICATED into instant-infra-secrets as a full redis:// URL.
+            # Rotating the Redis password therefore means updating BOTH
+            # secrets, or the provisioner silently regresses to 503s.
+            #
+            # Unset is safe: the provisioner falls back to the Addr form above,
+            # which is exactly the pre-fix behaviour.
+            - name: REDIS_PROVISION_URL
+              valueFrom:
+                secretKeyRef:
+                  name: instant-infra-secrets
+                  key: REDIS_PROVISION_URL
+                  optional: true
             # MONGO_ADMIN_URI was historically inlined here as
             # `mongodb://root:root@...` for local-dev convenience. For OSS
             # publication it is sourced from a Secret so the manifest contains
