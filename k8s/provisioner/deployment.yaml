@@ -120,13 +120,19 @@ spec:
             # created namespace instant-customer-<token> with a whole Postgres
             # Deployment + NodePort Service and NO row in instant_customers.
             #
-            # On this node the dedicated path is also physically capped:
-            # Standard_B2as_v2 allows maxDataDisks=4 and the data tier already
-            # binds all four (postgres-customers, redis-provision, mongodb,
-            # nats-jetstream). Anonymous tenants get no PVC so they merely eat
-            # RAM, but the first PVC-backed paid tenant would hang Pending
-            # forever — the silent first-paying-customer failure the migration
-            # plan called out in §6.1. Re-enabling dedicated needs a larger SKU.
+            # The dedicated path is also capacity-capped on a single node.
+            # Measured 2026-08-12: the pool runs one Standard_D4as_v5
+            # (4 vCPU / 16 GiB, maxDataDiskCount=8 — NOT the B2as_v2 the
+            # migration plan costed; the SKU was raised in "fix(azure): forum
+            # corrections"). The data tier already binds 4 of those 8 disks
+            # (postgres-customers, redis-provision, mongodb, nats-jetstream),
+            # leaving room for 4 PVC-backed dedicated tenants before the 5th
+            # hangs Pending — the silent first-paying-customer failure mode
+            # AZURE-MIGRATION-PLAN §6.1 warned about, just deferred rather than
+            # immediate. Anonymous tenants get no PVC, so on the dedicated path
+            # they instead consume node RAM one full Postgres pod at a time,
+            # unbounded and free. Re-enabling dedicated needs both a second
+            # node pool and a tier gate.
             - name: POSTGRES_PROVISION_BACKEND
               value: "local"
             # POSTGRES_CUSTOMERS_URL is the admin URL the provisioner uses
