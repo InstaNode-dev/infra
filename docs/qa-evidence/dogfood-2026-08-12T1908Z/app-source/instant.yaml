@@ -1,0 +1,5 @@
+services:
+  svc:
+    build: ./svc
+    port: 8080
+    expose: true

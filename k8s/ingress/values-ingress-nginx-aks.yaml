@@ -122,9 +122,30 @@ controller:
 #
 # Format: "<external port>": "<namespace>/<service>:<port>"
 tcp:
-  # NATS — the only one of the four whose proxy manifest lives in THIS repo
-  # (k8s/nats-proxy/deployment.yaml). Safe to enable at bring-up.
-  "4222": "instant/instant-nats-proxy:4222"
+  # NATS — routed STRAIGHT to the server, deliberately NOT through
+  # instant-nats-proxy. Changed 2026-08-13.
+  #
+  # nats-proxy terminates the client connection and synthesises its own INFO
+  # (server_id "instant-nats-proxy", go "proxy"), which means it issues its own
+  # nonce. NKey authentication is a nonce challenge-response: the client signs
+  # the nonce it was given, so a signature produced against the PROXY's nonce
+  # can never verify at the real server. Operator-mode auth through that proxy
+  # is therefore impossible, not merely misconfigured.
+  #
+  # Measured 2026-08-13 with a valid per-tenant credential whose account JWT was
+  # confirmed present in the resolver directory:
+  #   direct to nats:4222        -> Published 12 bytes
+  #   via LB -> instant-nats-proxy -> nats: Authorization Violation
+  #
+  # The proxy is also unnecessary here. It exists to demux per-token to
+  # DEDICATED per-tenant NATS pods; this cluster runs the shared server, where
+  # NATS itself enforces per-account subject permissions from the account JWT.
+  #
+  # Bypassing it is safe in a way that bypassing pg-proxy is NOT: pg-proxy
+  # carries the superuser-role denylist that pg_hba cannot express behind SNAT,
+  # whereas here the NATS server is the enforcement point (auth_required=true,
+  # anonymous CONNECT -> Authorization Violation, verified from the internet).
+  "4222": "instant-data/nats:4222"
 
   # ENABLED 2026-08-12. These three were commented out because their proxies
   # lived only in the separate InstaNode-dev/instant-pg-proxy family of repos
