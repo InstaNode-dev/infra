@@ -51,6 +51,13 @@ spec:
             # Shared backend: every customer database lives on this one mongod.
             - name: MP_FALLBACK_BACKEND
               value: "mongodb.instant-data.svc.cluster.local:27017"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: "50m"

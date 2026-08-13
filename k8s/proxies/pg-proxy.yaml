@@ -63,6 +63,13 @@ spec:
             # truehomie-db DROP incident.
             - name: PG_PROXY_DENIED_ROLES
               value: "instanode_admin,instant_cust,postgres"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: "50m"

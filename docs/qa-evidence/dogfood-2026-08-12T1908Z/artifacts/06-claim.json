@@ -1,0 +1,2 @@
+{"ok":false,"error":"missing_token","message":"token field is required","request_id":"d56b79cdc779134d9d864929917726b7","retry_after_seconds":null,"agent_action":"Tell the user POST /claim requires a `token` field carrying the onboarding token (the upgrade_jwt value from any anonymous /db/new, /cache/new, /storage/new, ... response). See https://instanode.dev/docs/claim."}
+HTTP_400

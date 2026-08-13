@@ -1,0 +1,2 @@
+{"agent_action":"Tell the user their INSTANT_TOKEN is missing or expired. A headless agent should re-auth via the CLI device-flow (POST https://api.instanode.dev/auth/cli, open the auth_url, poll GET /auth/cli/{id}) or set INSTANT_TOKEN to a PAT. See https://instanode.dev/docs/cli.","error":"unauthorized","error_code":"missing_credentials","message":"Authentication required: missing, malformed, or expired session token.","ok":false,"request_id":"c7ca8b2faa08478f90c967205545df18","retry_after_seconds":null,"upgrade_url":"https://instanode.dev/login"}
+HTTP_401

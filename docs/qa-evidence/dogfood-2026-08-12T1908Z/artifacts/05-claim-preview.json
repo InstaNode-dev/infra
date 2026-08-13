@@ -1,0 +1,2 @@
+{"ok":false,"error":"missing_token","message":"Token is required","request_id":"a4d5b83f2859287e41309e1f7d79b7b0","retry_after_seconds":null,"agent_action":"Tell the user no INSTANT_TOKEN was provided. A headless agent should run the CLI device-flow (POST https://api.instanode.dev/auth/cli) or set INSTANT_TOKEN to a Personal Access Token, then pass it via Authorization: Bearer \u003ctoken\u003e. See https://instanode.dev/docs/cli."}
+HTTP_400

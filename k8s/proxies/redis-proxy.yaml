@@ -45,6 +45,13 @@ spec:
             # PROVISION Redis (instant-data), not the platform Redis above.
             - name: RP_FALLBACK_BACKEND
               value: "redis-provision.instant-data.svc.cluster.local:6379"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: "50m"

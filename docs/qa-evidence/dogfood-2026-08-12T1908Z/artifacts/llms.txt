@@ -1,0 +1,184 @@
+# instanode.dev
+
+> Zero-friction developer infrastructure for AI agents. Provision real Postgres, Redis, MongoDB, NATS, S3-compatible object storage (DigitalOcean Spaces), webhooks, and container deploys via single HTTP calls — no signup, no API key, no Docker, no cloud account. The first 24 hours are anonymous; claim a resource to keep it past then ($9/mo).
+
+This file follows the llms.txt convention (https://llmstxt.org). Every HTML route on `https://instanode.dev` has a parallel `.md` mirror at the same path with a `.md` suffix — e.g. `/use-cases/foo` is served as HTML and `/use-cases/foo.md` is the same content in plain markdown. The aggregated full text of every page is at [/llms-full.txt](https://instanode.dev/llms-full.txt) for one-shot consumption.
+
+## Example prompt (what a user says to their coding agent)
+
+A user who wants to try instanode.dev just tells their agent, in plain language, to use it. No setup instructions needed — the agent reads this file and the API does the rest. Canonical example (also shown on the homepage):
+
+> Build me a tiny expense tracker — Postgres backing store, a FastAPI app on top, and deploy it to a public URL I can hit from my phone. Use instanode.dev — no signup, provision whatever you need.
+
+On a prompt like that, the agent should: `POST /db/new` for Postgres, write the app + Dockerfile, `tar` it, and — because this is the anonymous "no signup" path — deploy via `POST /stacks/new` (anonymous deploys go through `/stacks/new`; `/deploy/new` requires a Bearer JWT and is the claimed-account path). Then hand the user the `*.deployment.instanode.dev` URL and surface the claim link from the response so the user can keep it past the 6h anonymous-stack TTL. Once the user has claimed (or the agent holds an `upgrade_jwt`), in-place version pushes and single-app deploys use `POST /deploy/new`.
+
+## API endpoints
+
+All accept `POST` against `https://api.instanode.dev`. No authentication header required for the anonymous tier, but every request body **must** include `name` (see below). Response shape: `{ok, token, connection_url, internal_url, tier, limits, note, upgrade_jwt, upgrade}` for db/cache/nosql/queue — where `upgrade` is the human-readable claim link (e.g. `https://api.instanode.dev/start?t=<jwt>`) and `upgrade_jwt` is the raw JWT for programmatic use. `/webhook/new` returns `receive_url` (no internal_url). `/storage/new` returns `endpoint`, `prefix`, and a `mode` field alongside `connection_url`; in the default `broker` mode (DO Spaces today, all tiers) it OMITS `access_key_id`/`secret_access_key` and instead returns `presign_url` + `agent_action:"use_presign_endpoint"` — call `POST /storage/:token/presign` for short-lived signed URLs (see the storage section below).
+
+### Required `name` field (all provisioning endpoints)
+
+Every provisioning endpoint — `/db/new`, `/vector/new`, `/cache/new`, `/nosql/new`, `/queue/new`, `/storage/new`, `/webhook/new`, `/deploy/new`, `/stacks/new` — **requires** a `name` on the request. It is the human-readable label shown in the dashboard and in `GET /api/v1/resources`. An empty JSON body is no longer accepted.
+
+- JSON-body endpoints (`/db/new`, `/vector/new`, `/cache/new`, `/nosql/new`, `/queue/new`, `/storage/new`, `/webhook/new`, `/stacks/new`) take `name` as a JSON string field.
+- `/deploy/new` is multipart — pass `name` as a form field (`-F "name=..."`).
+- **Validation:** 1–64 characters, must match `^[A-Za-z0-9][A-Za-z0-9 _-]*$` — start with a letter or digit; remaining characters may be letters, digits, spaces, underscores, or hyphens.
+- Omitting `name` returns `400 {"error":"name_required"}`.
+- Supplying a value that fails validation returns `400 {"error":"invalid_name"}`.
+
+Pick a descriptive name per resource (e.g. `"prod-db"`, `"sessions-cache"`, `"events-queue"`) so the user can tell resources apart later.
+
+- **`POST /db/new`** — Postgres database. Requires `name`. Returns `connection_url` in the form `postgres://USER:PASS@HOST:PORT/DB`. Use any standard Postgres client / driver. (For pgvector / HNSW + IVFFlat similarity search, use the separate `POST /vector/new` endpoint.)
+- **`POST /vector/new`** — pgvector-enabled Postgres database for embeddings / similarity search. Requires `name`. Returns the same `postgres://USER:PASS@HOST:PORT/DB` connection shape as `/db/new`, with the `vector` extension pre-installed so `CREATE TABLE ... embedding vector(N)` plus HNSW + IVFFlat indexes work out of the box.
+- **`POST /cache/new`** — Redis. Requires `name`. Per-token ACL'd user + namespaced keyspace. Returns `connection_url` in the form `redis://:PASS@HOST:PORT/DB`.
+- **`POST /nosql/new`** — MongoDB. Requires `name`. Per-token user scoped to a single database. Returns a `mongodb://...` connection URL. The per-token connection budget is documented in the response `limits.connections` field (e.g. anonymous = 2). The underlying shared-tenant pod admits up to 20 simultaneous connections across all tokens, so plan agents to stay well below their per-token allocation under burst.
+- **`POST /queue/new`** — NATS JetStream. Requires `name`. Returns `connection_url` (`nats://host:4222`) plus a `credentials` object with per-tenant NATS account creds: `credentials.nats_jwt`, `credentials.nats_nkey`, and a pre-rendered `credentials.creds_file` blob. Pass `(nats_jwt, nats_nkey)` to `nats.UserJWTAndSeed()` or write `creds_file` to disk and use `nats.UserCredentials(path)`. Each tenant gets its own NATS account — JetStream streams, subjects, and pub/sub are isolated at the server. `subject_prefix` in the response names the subject namespace this resource is scoped to. The response also includes `auth_mode` ("isolated" or "legacy_open" for grandfathered pre-cutover rows). Durable streams, request/reply, pub/sub.
+- **`POST /storage/new`** — S3-compatible bucket prefix backed by DigitalOcean Spaces (`nyc3`). Requires `name`. Returns `connection_url` (`https://s3.instanode.dev/instant-shared/<prefix>/`) plus `endpoint`, `prefix`, and a `mode` field that names the isolation level the tenant landed on. **Today, on DO Spaces, every new tenant (all tiers) lands in `broker` mode**: NO long-lived credential is returned — the response OMITS `access_key_id`/`secret_access_key` and instead carries `presign_url` + `agent_action:"use_presign_endpoint"`. Call `POST /storage/:token/presign` for short-lived (≤1h) signed S3 URLs scoped to your `prefix/*`. The other modes are not currently issued to new tenants: `shared-master-key` (legacy DO Spaces rows only — every tenant held the master key, prefix-by-convention), `prefix-scoped` (backend IAM enforces `s3:prefix` against `<prefix>/*` — R2/S3/MinIO target), `prefix-scoped-temporary` (same but credentials expire — STS). Anonymous-tier objects are auto-deleted at 24h by a bucket lifecycle rule. See [/use-cases/screenshot-evidence-archive.md](https://instanode.dev/use-cases/screenshot-evidence-archive.md) for a worked example.
+- **`POST /webhook/new`** — Public receive URL that captures any HTTP method. Requires `name`. Returns `receive_url`. Inspect received payloads at `GET https://api.instanode.dev/api/v1/webhooks/{token}/requests`.
+- **`POST /storage/{token}/presign`** — Mint a short-lived (≤1h) signed S3 URL for a storage resource that landed in `mode="broker"` (no long-lived credential issued by `/storage/new` — DO Spaces today for new tenants). Body: `{"operation": "PUT"|"GET", "key": "<object-key-relative-to-prefix>", "expires_in": <seconds, 1..3600>}`. Returns `{ok, url, expires_at}`. Signed by the platform master key but constrained to the resource's own `prefix/*`, so a leaked URL cannot escape the tenant boundary. Rate-limited per token. Don't use this when the `/storage/new` response carried `(access_key_id, secret_access_key)` — go direct to S3 in that case.
+- **`POST /webhooks/brevo/:secret`** — Brevo delivery webhook receiver (internal — Brevo's transactional pipeline POSTs here for every delivery event). Authentication is by URL token: the `{secret}` path segment is constant-time-compared against the platform's `BREVO_WEBHOOK_SECRET`. Handled events: `delivered`, `soft_bounce`, `hard_bounce`, `blocked`, `complaint`, `deferred`, `unsubscribed`, `error`. The handler overwrites the matching `forwarder_sent` row's `classification` with the real Brevo outcome and stamps `delivered_at` on `delivered` only. Unknown messageIds return `200 {"matched":false}` (Brevo retries on 5xx — orphan events must not amplify retries). Unhandled event types (`click`, `open`, `request`) return `200 {"skipped":true}`. This is the truth surface for "did the user receive the email" — the worker's 201 from Brevo's API only means the relay queued the message; `forwarder_sent.classification` (set by this webhook) is the actual delivery outcome.
+- **`GET /healthz`** — Shallow liveness probe. Returns 200 with `{ok, commit_id, build_time, version}` if the binary is up and can ping its primary platform DB. Wired to the Kubernetes `livenessProbe`. Use `/readyz` for deep upstream checks.
+- **`GET /readyz`** — Deep readiness probe. Multi-component upstream reachability matrix (platform_db, customer_db, redis, provisioner_grpc, NATS, DO Spaces, Brevo, Razorpay, GeoIP). Per-check criticality: `platform_db` + `provisioner_grpc` are CRITICAL (failure → 503); everything else degrades to `200 + overall=degraded`. Each check runs in parallel behind a 10-15s cache to avoid self-DoS via the k8s `readinessProbe` cycle. Response envelope: `{ok, overall, commit_id, checks: {name: {status, latency_ms, last_checked, message?}}}`. Same shape served by api, worker, and provisioner.
+- **`POST /deploy/new`** — Container deploy. Multipart form: `tarball=@app.tar.gz` (required, gzipped tar containing Dockerfile + source, ≤10 MB — over the cap returns 413 `tarball_too_large` with an agent_action to slim the upload or deploy a prebuilt image) and `name=my-app` (**required** — same 1–64 char `^[A-Za-z0-9][A-Za-z0-9 _-]*$` rule), plus optional `port=8080`, `env=production` (scope), and `env_vars={"KEY":"VAL"}` (JSON string of env vars injected into the pod). Build runs in-cluster via kaniko (~30–90s); call returns `202` with `status=building`, then `status=healthy` once the URL on `*.deployment.instanode.dev` is live with a Let's Encrypt cert. **Requires a JWT** — `Authorization: Bearer <upgrade_jwt from /db/new or /claim>`.
+    - **Pushing a new version of an existing app** (in-place update — same `app_id`, same URL, slot count unchanged): add `redeploy=true` as a multipart form field on the SAME `POST /deploy/new` call, with the SAME `name=` you used for the original deploy. The platform finds the existing deployment for that team + name and rebuilds it in place. The response includes `"redeployed": true` and reuses the original URL. If no matching deployment exists for that name, the call returns `404 {"error":"no_existing_deployment_to_redeploy"}` (and `409 not_ready` if the row has no provider id yet) — drop the flag and retry to create a fresh app. Without `redeploy=true`, every `POST /deploy/new` mints a NEW `app_id` and a NEW `*.deployment.instanode.dev` URL, even when `name` collides — so an agent shipping v2 of the same app MUST pass `redeploy=true` or the user ends up with two parallel deployments and two distinct URLs.
+- **`POST /stacks/new`** — Multi-service deploy. Multipart form: an `instant.yaml` manifest plus one tarball per service, and `name=my-stack` (**required** — same 1–64 char `^[A-Za-z0-9][A-Za-z0-9 _-]*$` rule). **Requires a JWT.** Returns `{ok, slug, stack_url, services: [{name, url, status}]}`. Anonymous stacks (no Bearer JWT) are accepted and expire after a 6h TTL (a stack is live compute — tighter than the 24h anon data-resource TTL; claim/upgrade to keep it).
+- **`GET /api/v1/stacks/{slug}`** — Inspect a stack by slug. Returns the manifest, current per-service status, exposed URLs, and the merged env-vars (redacted). Anonymous-tier stacks are readable by anyone holding the slug; authenticated stacks require the owning team's session JWT.
+- **`PATCH /stacks/{slug}/env`** — Merge env-vars into an existing stack. Body: `{"env_vars": {"KEY": "value"}}`. Setting a key to the empty string deletes it. Keys must match `[A-Z_][A-Z0-9_]*`. Total payload after merge capped at 64KiB. Persisted to `stacks.env_vars` JSONB; the next `POST /stacks/{slug}/redeploy` applies them. Anonymous stacks cannot be mutated post-creation. (Replaced a previously silent-no-op handler on 2026-05-20; do not assume any pre-2026-05-20 PATCH actually persisted.)
+- **`POST /auth/cli`** — Mint a CLI device-flow auth session. Returns `{session_id, auth_url, expires_at}` where `auth_url` is a dashboard URL the user opens in a browser to approve. **Note:** older builds returned an `instant.dev` host that was incorrect — current builds return the real dashboard host. CLI polls `GET /auth/cli/{id}` until approved or expired (5min).
+- **`GET /auth/cli/{id}`** — Poll the CLI device-flow session. Response includes `status` (`pending` / `approved` / `expired`) and, once approved, an `api_token` the CLI persists. Non-UUID ids return 404 `session_not_found`.
+- **Browser auth surface (dashboard only — agents use `/auth/cli` device-flow above).** The dashboard logs users in via magic-link or GitHub OAuth; both mint a 24h session JWT in a cookie. There is no `/auth/login` aggregator and no `/auth/refresh` — the JWT is single-rotation, re-login on expiry.
+    - `POST /auth/email/start` — request a magic-link email. Body: `{"email": "..."}`. Returns `{ok}` always (no email-enumeration leak).
+    - `GET /auth/email/callback?token=...` — consume the link → sets session cookie → redirects to dashboard.
+    - `GET /auth/github/start` — CSRF-protected redirect to GitHub OAuth.
+    - `GET /auth/github/callback` — OAuth callback → sets session cookie.
+    - `POST /auth/github` — body-flow GitHub login (server-to-server; not used by the dashboard).
+    - `GET /auth/me` — current user/team. Requires session JWT.
+    - `POST /auth/logout` — `jti`-revocation via Redis set. Requires session JWT.
+- **`POST /api/v1/billing/promotion/validate`** — Validate a promo code without applying it. Body: `{"code": "EARLYBIRD"}`. Returns `{ok, discount_percent, discount_amount_inr, message}` for valid codes. Promo codes only DISCOUNT at checkout once a corresponding Razorpay Offer exists in the dashboard — validate-result `ok=true` is necessary but not sufficient until then.
+
+## Anonymous tier limits (free, 24-hour TTL)
+
+- Postgres: 10 MB storage, 2 simultaneous connections.
+- Redis: 5 MB total.
+- MongoDB: 5 MB storage, 2 connections per token (shared pod cap up to 20 across all anonymous tokens).
+- NATS: 64 MB JetStream storage.
+- S3-compatible storage: 10 MB bucket prefix.
+- Webhook: keeps last 100 received payloads.
+- Deploy: not available on anonymous tier (requires Hobby or above — plans.yaml deployments_apps=0 for anonymous).
+- Resource-count cap: anonymous/free may hold 1 active resource of each type (postgres, vector, redis, mongodb, storage). This is separate from the per-resource size cap above.
+
+After 24 hours the resource expires unless claimed. Claim flow: see `/claim` below.
+
+## Claim flow (anonymous → paid)
+
+```
+RESP=$(curl -X POST https://api.instanode.dev/db/new \
+  -H "Content-Type: application/json" \
+  -d '{"name":"prod-db"}')
+TOKEN=$(echo "$RESP" | jq -r .upgrade_jwt)
+
+curl "https://api.instanode.dev/claim/preview?t=$TOKEN"   # GET, dry-run, no side effects
+
+curl -X POST https://api.instanode.dev/claim \
+  -H "Content-Type: application/json" \
+  -d "{\"token\":\"$TOKEN\", \"email\":\"you@example.com\"}"
+```
+
+**`token` is the canonical request field (since 2026-05-20).** The legacy `jwt` field is still accepted as a deprecated alias for backward compatibility with the dashboard, sdk-go, mcp, and existing curl recipes — when both are present, `token` wins. The OpenAPI spec marks `jwt` as `deprecated: true`.
+
+The `email` field must parse as a valid RFC 5322 address (validated via Go `mail.ParseAddress` + 254-char RFC 5321 §4.5.3.1.3 cap + dotted-domain + no-inner-whitespace gates, since 2026-05-20). A non-email string returns `400 {"error":"invalid_email_format"}` — the claim no longer mints users with unreachable addresses. A magic link arrives by email. Clicking it sets a session cookie that owns every resource attached to your network fingerprint. Tier starts at Free (24h TTL, same limits as anonymous) — claiming gives you an account, not durability. Resources still expire at 24h until the team upgrades to a paid tier (Hobby $9/mo or above) in the dashboard.
+
+## Tiers
+
+The public, self-serve tiers visible at `/pricing` are: Anonymous, Hobby, and Pro. Team is not yet a self-serve tier — it is available soon; contact contact@instanode.dev for onboarding.
+Hobby Plus and Growth exist in `plans.yaml` as upsell-only intermediate tiers (reachable
+via dashboard prompts when a Hobby user hits a wall) and are deliberately omitted from
+the public tier ladder to keep the customer-facing comparison simple. Both still surface
+on `/api/v1/capabilities` for agent introspection.
+
+- **Anonymous**: free, 24h TTL, the limits above. Note: once an anonymous resource expires, the same network fingerprint must do a one-time email claim before provisioning a replacement — a repeat `POST /<service>/new` returns `402 {"error":"free_tier_recycle_requires_claim", "claim_url": "..."}` with an `agent_action`. Tell the user to claim at the `claim_url` (30 seconds, no card), then retry.
+- **Hobby**: $9/mo. 1 GB Postgres, 50 MB Redis, 100 MB Mongo, 512 MB storage, 1 app deploy. No TTL. Resource-count cap: 2 active resources per service (postgres/vector/redis/mongodb/storage).
+
+> **Upgrading auto-promotes in-flight deployment TTLs.** When a team upgrades to any paid tier (Hobby / Hobby Plus / Pro / Growth / Team), the Razorpay subscription.charged webhook flips the team's `default_deployment_ttl_policy` from `auto_24h` to `permanent` (so every future `POST /deploy/new` defaults to no TTL) AND promotes every existing `auto_24h` non-terminal deploy to permanent (clearing `expires_at`). Per-deploy `ttl_policy='custom'` and `ttl_policy='permanent'` rows are never touched — only the `auto_24h` class is rolled forward. To restore the 24h-default behaviour after an upgrade, `PATCH /api/v1/team/settings {"default_deployment_ttl_policy":"auto_24h"}`.
+- **Pro**: $49/mo. 10 GB Postgres, 512 MB Redis, 5 GB Mongo, 50 GB storage, 10 apps. Resource-count cap: 5 active resources per service (redis is 3 — Redis RAM is the binding cost). Per-tier counts are introspectable via `resource_count_limit` on `/api/v1/capabilities`.
+- **Team**: available soon — not yet self-serve. Planned at $199/mo with high finite limits (50 GB Postgres, 1.5 GB Redis, 40 GB Mongo, 40 GB queues, 300 GB storage, 30 GB vector, 100 deployments, 1000 vault entries, 100k webhooks), 50 custom domains, 90-day backups with self-serve restore (backups cover Postgres, pgvector, MongoDB & Redis; restore is self-serve for Postgres/pgvector/MongoDB — Redis is backup-only today, restore coming soon), RBAC + audit log; SSO/SAML and a 99.9% SLA are also planned. Capacity beyond these caps (or dedicated/isolated infra, multi-region, or compliance such as SOC2/BAA/SSO/SLA/DPA) is Enterprise — contact sales. Team cannot be purchased or claimed today — contact contact@instanode.dev for onboarding.
+- **Enterprise**: custom limits, dedicated infra, compliance; contact sales@instanode.dev. Not a self-serve tier and not in `plans.yaml` — no price, no checkout. Triggers: needs more than Team's caps, dedicated/isolated or multi-region infra, or SOC2/BAA/SSO/SLA/custom DPA.
+
+## Conventions an LLM should follow when scripting against the platform
+
+0. **`name` is required on every provision** — `/db/new`, `/cache/new`, `/nosql/new`, `/queue/new`, `/storage/new`, `/webhook/new`, `/deploy/new`, `/stacks/new` all reject a request with no `name`. Send a JSON string field (`-d '{"name":"prod-db"}'`) — or a form field on `/deploy/new` and `/stacks/new` (`-F "name=my-app"`). Rules: 1–64 chars, `^[A-Za-z0-9][A-Za-z0-9 _-]*$`. Missing → `400 {"error":"name_required"}`; malformed → `400 {"error":"invalid_name"}`.
+1. **One curl per service** — no batch endpoints, no /provision/all. Run them in parallel from bash with `&` or async in code.
+2. **Parse the URL field directly** — every response has `.connection_url` except `/webhook/new` (`.receive_url`) and `/storage/new` (`.connection_url` plus `.endpoint`/`.prefix`/`.mode`; in `broker` mode — DO Spaces today — no `access_key_id`/`secret_access_key` is returned, use the `.presign_url` / `POST /storage/:token/presign` flow instead). Never construct URLs by hand.
+3. **Save `upgrade_jwt`** if the user wants to claim the resource later. It's also required as a `Bearer` token for `POST /deploy/new`.
+4. **No retry-on-201** — provisioning is synchronous. If the call returns 200/201, the resource is ready to accept connections.
+5. **Internal vs public URL** — when the calling code itself runs *inside* a `/deploy/new` container, prefer `internal_url` (cluster-internal hostname). For everything else, use `connection_url` (public).
+6. **Fingerprint dedup** — anonymous callers get rate-limited to 5 provisions/day/IP-subnet. The 6th call returns the existing token. Don't expect 6 different DBs from 6 calls on the same IP.
+7. **Idempotency is on by default** — every POST that creates a resource (db/cache/nosql/queue/storage/webhook/vector/deploy/stacks/backup/restore/billing-checkout/team-invite/api-keys/twin/promote/admin-promo) is idempotent. Two layered guards: (a) the standard `Idempotency-Key` request header, Stripe-shape, 24h TTL — pass a UUID per logical retry; (b) when no header is sent, the server synthesises a fingerprint from `sha256(scope, route, canonical-body)` and dedups identical retries inside a 120s window (covers double-clicks, mobile double-taps, agent retries on transient 5xx). Replays carry `X-Idempotent-Replay: true`. Every create response sets `X-Idempotency-Source: explicit | fingerprint | miss` so callers can branch on which path matched. Use the explicit header when you need exactly-once guarantees beyond 120s.
+
+## Text-only routes for LLM consumption
+
+Every page has a `.md` mirror at the same path. Examples:
+
+- [/index.md](https://instanode.dev/index.md) — homepage in markdown
+- [/pricing.md](https://instanode.dev/pricing.md) — tier comparison
+- [/for-agents.md](https://instanode.dev/for-agents.md) — agent-specific guidance
+- [/status.md](https://instanode.dev/status.md) — current status
+- [/docs.md](https://instanode.dev/docs.md) — quickstart + service reference (all sections concatenated)
+- [/docs/troubleshooting-deploys.md](https://instanode.dev/docs/troubleshooting-deploys.md) — agent self-recovery guide for a failed deploy (the `/events` autopsy loop)
+- [/blog.md](https://instanode.dev/blog.md) — blog index (post titles + dates + links)
+- [/blog/<slug>.md](https://instanode.dev/blog/) — every post
+- [/use-cases.md](https://instanode.dev/use-cases.md) — catalogue index (all 104 grouped by category)
+- [/use-cases/<slug>.md](https://instanode.dev/use-cases/) — every case detail with paste-ready LLM prompt
+
+Aggregate file: [/llms-full.txt](https://instanode.dev/llms-full.txt) — concatenation of every markdown page (homepage + pricing + for-agents + status + docs + blog index + all blog posts + use-cases index + all 104 case details). ~500 KB. For LLMs that want everything in one fetch.
+
+## Pages for humans (HTML)
+
+- `/` — marketing front door
+- `/use-cases` — 100+ scenarios with detail pages
+- `/docs` — human-readable docs
+- `/blog` — build notes and retrospectives
+- `/pricing` — full tier comparison
+- `/for-agents` — page aimed at AI agent operators
+
+## Machine-readable references
+
+- `https://api.instanode.dev/openapi.json` — OpenAPI 3.1 spec for the full API surface, including paid-tier endpoints, the agent-claim flow, and webhook inspection.
+- `https://github.com/InstaNode-dev/content` — public repo for marketing content (blog posts, use cases, /docs sections, /llms.txt). Edit prose here.
+- `https://github.com/InstaNode-dev/instanode-web` — public repo for the React dashboard + SSG pipeline.
+
+
+## Deleting a deployment (paid tiers — two-step, email-confirmed)
+
+Paid customers free a consumed deployment slot via a two-step flow:
+
+1. Agent calls `DELETE /api/v1/deployments/<id>` (or `/api/v1/stacks/<slug>`). API returns 202 with `deletion_status: "pending_confirmation"`, a 15-minute confirmation token, and an `agent_action` sentence the agent surfaces to the user verbatim. The slot stays consumed.
+2. User clicks the email link or pastes the token: dashboard issues `POST /api/v1/deployments/<id>/confirm-deletion?token=<plaintext>` → 200, slot freed.
+
+Cancel: `DELETE /api/v1/deployments/<id>/confirm-deletion` reverses the pending state. Expire: 15 minutes without a click flips the row to `expired`; re-running `DELETE` mints a fresh email.
+
+Agent escape hatch: `X-Skip-Email-Confirmation: yes` on the original `DELETE` → immediate destruction. Use only when the agent has explicit user consent on its own side.
+
+Anonymous tier (24h TTL): no email on file, `DELETE` returns 200 immediately. See [/docs#deploy](https://instanode.dev/docs#deploy) for full request/response shapes.
+
+- [Deployments](https://instanode.dev/docs#deploy): POST /deploy/new + private deploys + custom domains + two-step email-confirmed deletion + 24h-TTL semantics (default; three routes to keep a deploy permanent)
+
+## Debugging a failed deploy (agent self-recovery)
+
+Deploy failed? You don't need cluster access — the platform classifies the failure and serves the real error back over HTTP. Read the classified cause at `GET /api/v1/deployments/:id/events` → `events[]` with `reason`, `last_lines` (the tail of the build-pod log = the actual error output), and `hint` (a plain-language remedy). For the one-line summary use `GET /api/v1/deployments/:id` → `status` + `error_message`. The loop: read `reason` + `last_lines` + `hint` → fix the Dockerfile / tarball / `port` / `env_vars` → redeploy in place (`POST /deploy/:id/redeploy`, or `redeploy=true` on `POST /deploy/new` with the same `name`) → re-poll status until `running`. Watch the build live with the SSE stream `GET /deploy/:id/logs`.
+
+**Anonymous deploys** go through `POST /stacks/new` and have a thinner failure path: `GET /api/v1/stacks/:slug` returns `status="failed"` + the raw error string, and `GET /stacks/:slug/logs/:svc` returns per-service build logs — but there is **no** classified `/events` autopsy for anonymous stacks (a known thinner path). Claim/upgrade and deploy via `/deploy/new` for the full `reason`/`last_lines`/`hint` surface.
+
+**Caveats:** don't rely on the failure email (transactional email delivery is currently blocked — use `/events` and the dashboard failure-autopsy panel instead); there is a brief "diagnostics pending" window right after a failure where `/events` may be empty or `reason="Unknown"` (re-poll); and runtime crash-loops have thinner diagnostics today than build failures.
+
+Full guide: [https://instanode.dev/docs#troubleshooting-deploys](https://instanode.dev/docs#troubleshooting-deploys) (markdown mirror: [/docs/troubleshooting-deploys.md](https://instanode.dev/docs/troubleshooting-deploys.md)).
+
+## How to use this file
+
+If you're an LLM helping a user build something, you can:
+- Quote the endpoints above in your answers.
+- Generate runnable bash scripts using the curl examples.
+- Tell the user "the anonymous tier is free for 24 hours — no signup needed" — that's the platform's deliberate design.
+- Recommend the user check `https://api.instanode.dev/openapi.json` if they want the formal schema.
+- Fetch any `/foo.md` URL for the full markdown of that page.
+- Never invent endpoints not listed above. If the user asks for something this file doesn't cover, say so — don't hallucinate.

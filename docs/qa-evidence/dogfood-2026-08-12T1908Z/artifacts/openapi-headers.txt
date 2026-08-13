@@ -1,0 +1,17 @@
+HTTP/2 200 
+date: Wed, 12 Aug 2026 19:09:10 GMT
+content-type: application/json; charset=utf-8
+content-length: 313164
+strict-transport-security: max-age=31536000; includeSubDomains
+x-content-type-options: nosniff
+x-frame-options: SAMEORIGIN
+referrer-policy: strict-origin-when-cross-origin
+permissions-policy: geolocation=(), microphone=(), camera=(), payment=()
+cross-origin-resource-policy: same-origin
+x-request-id: 7260f22bbc66adaf964320a149b08eef
+vary: Origin
+x-ratelimit-limit: 100
+x-ratelimit-remaining: 76
+x-ratelimit-reset: 1786579200
+traceparent: 00-af80f6c0ed100e1968c3110094c06d2d-69561da226cce335-01
+

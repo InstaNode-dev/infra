@@ -1,0 +1,1 @@
+nats: error: nats: Authorization Violation

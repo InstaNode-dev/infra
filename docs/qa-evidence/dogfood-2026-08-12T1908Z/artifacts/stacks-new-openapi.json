@@ -1,0 +1,40 @@
+{
+  "summary": "Deploy a multi-service stack",
+  "description": "Like POST /deploy/new but for an instant.yaml manifest declaring multiple services. Each service has its own build context (tarball), port, optional Ingress (expose:true), and optional list of resource tokens (needs:). Cross-service references use service://<name> in env values \u2014 these resolve to cluster-internal http://<name>:<port> URLs at deploy time, so service A can call service B without knowing its public hostname. OptionalAuth: anonymous stacks are supported (24h TTL, rate-limited by fingerprint).",
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "requestBody": {
+    "required": true,
+    "content": {
+      "multipart/form-data": {
+        "schema": {
+          "$ref": "#/components/schemas/StackRequest"
+        }
+      }
+    }
+  },
+  "responses": {
+    "202": {
+      "description": "Stack accepted, building",
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/StackResponse"
+          }
+        }
+      }
+    },
+    "400": {
+      "description": "Invalid manifest, missing tarball for a declared service, or unresolved service:// reference"
+    },
+    "429": {
+      "description": "Anonymous rate limit exceeded"
+    },
+    "503": {
+      "description": "Compute backend unavailable"
+    }
+  }
+}

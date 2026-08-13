@@ -1,0 +1,2 @@
+{"ok":false,"error":"name_required","message":"Field 'name' is required — provide a short human label (1-64 chars) for this resource.","request_id":"13025c16f790ff8ed7ca73e66e67b9c4","retry_after_seconds":null,"agent_action":"Tell the user the provisioning request is missing a name. Add a 'name' field with a short human label (1-64 chars; letters, numbers, spaces, dashes) — e.g. \"My App DB\" — and retry."}
+HTTP_400
