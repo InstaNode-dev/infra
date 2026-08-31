@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Validate tag matches production regex
         env:
@@ -172,7 +172,7 @@ jobs:
       id-token: write   # for cosign keyless signing
     steps:
       - name: Install syft
-        uses: anchore/sbom-action/download-syft@v0.24.0
+        uses: anchore/sbom-action/download-syft@v0.24.2
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
